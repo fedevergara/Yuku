@@ -384,6 +384,7 @@ class Yuku:
             data = list(cursor)
             self.db[f"{collection}_data"].insert_many(data)
 
+
     def search(self, q: str, limit: int = 5):
         """
         Method to search datasets in socrata for the endpoint www.datos.gov.co

@@ -38,6 +38,8 @@ parser.add_argument('--download_collection', type=str,
                     help='Collection name to --download')
 parser.add_argument('--delay', type=float, default=0.3,
                     help='delay between requests, default 0.3 seconds')
+parser.add_argument('--download_publindex', action='store_true',
+                    help='Download Publindex dataset into MongoDB using existing download()')
 
 if __name__ == '__main__':
     args = parser.parse_args()
@@ -58,7 +60,7 @@ if __name__ == '__main__':
     if args.download_gruplac_groups is not None:
         yuku.download_gruplac_groups(args.download_gruplac_groups)
 
-    if args.download_cvlac_profiles is not None:
+    if args.download_cvlac_profiles:
         yuku.download_cvlac_profile(args.download_cvlac_profiles_use_raw, args.download_cvlac_profiles_max_tries)
 
     if args.download is not None:
@@ -66,3 +68,7 @@ if __name__ == '__main__':
             print("ERROR: for option --download  a collection name have to be provide using --download_collection")
         else:
             yuku.download(args.download,args.download_collection)
+
+    if args.download_publindex:
+        # Use generic download() to store dataset into MongoDB under 'publindex' collection
+        yuku.download('mwmn-inyg', 'publindex')

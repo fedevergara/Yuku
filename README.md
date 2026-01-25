@@ -216,3 +216,34 @@ http://colav.udea.edu.co/
 
 
 
+
+## Soporte: Publindex
+
+
+Para descargar el dataset "Revistas Indexadas — Índice Nacional Publindex" (resource id `mwmn-inyg`) se agregó soporte en la clase `Yuku` y en el script `bin/yuku_run`.
+
+
+Uso desde terminal (almacena en MongoDB usando `download`):
+
+```
+bin/yuku_run --download_publindex
+```
+
+Esto guardará las colecciones `publindex_dataset_info` y `publindex_data` en la base de datos configurada.
+
+O desde Python, reutilizando la clase existente:
+
+```
+from yuku.Yuku import Yuku
+y = Yuku()
+y.download('mwmn-inyg', 'publindex')
+```
+
+Para crear una rama git localmente y trabajar sobre ella:
+
+```
+git checkout -b publindex
+```
+
+
+

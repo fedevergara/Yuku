@@ -125,5 +125,12 @@ venv.bak/
 .dmypy.json
 dmypy.json
 
+# Local execution data, credentials/paths and generated artifacts
+*.json
+logs/
+bin/yuku_normalize_scienti_v3
+bin/yuku_rebuild_scienti_entities_dates_v2
+bin/yuku_rebuild_scienti_entities_semantics_v3
+
 # Pyre type checker
 .pyre/

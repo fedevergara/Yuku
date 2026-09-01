@@ -1,2 +1,5 @@
-recursive-include yuku/ *.py
-recursive-include yuku/ *.*
+recursive-include yuku *.py
+recursive-include yuku/data *.csv
+global-exclude *.json
+global-exclude *.py[cod]
+prune yuku/__pycache__

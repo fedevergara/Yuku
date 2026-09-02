@@ -12,20 +12,31 @@ from typing import Any, Callable, Iterator
 
 from pymongo import ASCENDING
 
+from yuku.cvlac_related_works import classify_target_category
+from yuku.gruplac_related_works import classify_gruplac_product
 from yuku.scienti_entities import (
     BOGOTA,
     ENTITY_KEYS,
     ENTITY_NORMALIZER_VERSION,
     ENTITY_RUNS,
+    _occurrence_metadata,
     _resolve_thesis_roles,
     _sanitize_event_record,
     _timestamp,
     _year,
     exact_key,
+    prepare_gruplac_record,
+)
+from yuku.scienti_routing import (
+    CVLAC_THESIS_TYPES,
+    GRUPLAC_THESIS_TYPES,
+    IMPACTU_CATALOG,
+    route_cvlac,
+    route_gruplac,
 )
 
 
-COMPARISON_VERSION = "scienti-entity-version-comparison-v2"
+COMPARISON_VERSION = "scienti-entity-version-comparison-v4"
 ENTITY_COMPARISONS = "scienti_entity_version_comparisons"
 ENTITY_COMPARISON_ANOMALIES = "scienti_entity_version_comparison_anomalies"
 ENTITY_COMPARISON_TRANSITIONS = "scienti_entity_version_comparison_transitions"
@@ -34,6 +45,24 @@ DATE_FIELDS = {
     "projects": {"date_init": "start_date", "date_end": "end_date"},
     "events": {"date_held": "start_date"},
 }
+CATALOG_WORK_RULES = {
+    "cvlac_production_channel",
+    "gruplac_directed_work_channel",
+    "gruplac_exact_work_ip_type",
+    "gruplac_production_channel",
+}
+CATALOG_PATENT_RULES = {
+    "cvlac_exact_patent_type",
+    "gruplac_exact_patent_ip_type",
+}
+STABLE_OCCURRENCE_FIELDS = (
+    "id", "source_kind", "source_collection", "source_id", "record_index",
+    "source_section", "product_type", "url", "validated",
+)
+OCCURRENCE_SIGNATURE_FIELDS = (
+    "id", "source_kind", "source_collection", "source_id", "record_index",
+    "source_section", "product_type",
+)
 
 
 def utc_now() -> datetime:
@@ -167,11 +196,33 @@ class ScientiEntityVersionComparator:
             raise RuntimeError(f"entity comparison sources cannot be empty: {counts}")
         old_version = str(old_config.get("normalizer_version") or "")
         new_version = str(new_config.get("normalizer_version") or "")
+        old_router = str(old_config.get("router_version") or "")
+        new_router = str(new_config.get("router_version") or "")
         if (
             old_version == "scienti-entity-normalizer-v2"
             and new_version == "scienti-entity-normalizer-v3"
         ):
             self.transition_profile = "semantic_hardening_v3"
+        elif (
+            old_version == "scienti-entity-normalizer-v3"
+            and new_version == "scienti-entity-normalizer-v4"
+            and old_router == "scienti-exact-router-v4"
+            and new_router == "scienti-exact-router-v5"
+        ):
+            self.transition_profile = "catalog_routing_v4"
+            old_general_works = self.db[self.old_destinations["works"]].count_documents(
+                {"source_metadata.family": "work"}
+            )
+            if old_general_works:
+                raise RuntimeError(
+                    "catalog routing transition requires v3 without general works"
+                )
+        elif (
+            old_version == new_version == ENTITY_NORMALIZER_VERSION
+            and old_router
+            and old_router == new_router
+        ):
+            self.transition_profile = "snapshot_refresh"
         self.config = {
             "comparison_version": COMPARISON_VERSION,
             "old_run_name": self.old_run_name,
@@ -182,6 +233,8 @@ class ScientiEntityVersionComparator:
             "new_config_hash": new_run.get("config_hash"),
             "old_normalizer_version": old_version,
             "new_normalizer_version": new_version,
+            "old_router_version": old_router,
+            "new_router_version": new_router,
             "transition_profile": self.transition_profile,
             "counts": counts,
         }
@@ -518,6 +571,430 @@ class ScientiEntityVersionComparator:
             set(by_side["old"]) & set(by_side["new"])
         )
 
+    @staticmethod
+    def _occurrences(document: dict[str, Any]) -> list[dict[str, Any]]:
+        return [
+            value
+            for value in (document.get("source_metadata") or {}).get("occurrences") or []
+            if isinstance(value, dict)
+        ]
+
+    def _catalog_target(self, occurrence: dict[str, Any]) -> str:
+        rule = str(occurrence.get("route_rule") or "")
+        if rule in CATALOG_WORK_RULES:
+            return "works"
+        if rule in CATALOG_PATENT_RULES:
+            return "patents"
+        return ""
+
+    @staticmethod
+    def _type_counter(values: list[dict[str, Any]]) -> Counter:
+        return Counter(
+            json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+            for value in values
+            if isinstance(value, dict)
+        )
+
+    def _expected_impactu_type(
+        self, entity: str, occurrence: dict[str, Any]
+    ) -> str:
+        rule = str(occurrence.get("route_rule") or "")
+        product_type = str(occurrence.get("product_type") or "")
+        section = str(occurrence.get("source_section") or "")
+        if rule == "cvlac_exact_thesis_type":
+            mapping = CVLAC_THESIS_TYPES.get(exact_key(product_type)) or {}
+            return str(mapping.get("impactu_type") or "")
+        if rule == "gruplac_exact_thesis_type":
+            mapping = GRUPLAC_THESIS_TYPES.get(exact_key(product_type)) or {}
+            return str(mapping.get("impactu_type") or "")
+        if rule in {"cvlac_exact_project_type", "gruplac_exact_project_type"}:
+            return "Proyecto"
+        if rule in {"cvlac_exact_event_type", "gruplac_exact_event_type"}:
+            return "Evento"
+        if rule in CATALOG_PATENT_RULES:
+            return "Patente"
+        if rule == "cvlac_production_channel":
+            return classify_target_category(section, product_type)
+        if rule in {
+            "gruplac_directed_work_channel",
+            "gruplac_exact_work_ip_type",
+            "gruplac_production_channel",
+        }:
+            return classify_gruplac_product(product_type, section)
+        return ""
+
+    @staticmethod
+    def _native_type(occurrence: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "provenance": "scienti",
+            "source": "scienti",
+            "type": str(occurrence.get("product_type") or ""),
+            "level": 1,
+            "parent": str(occurrence.get("source_section") or "") or None,
+        }
+
+    @staticmethod
+    def _impactu_type(value: str) -> dict[str, str]:
+        return {
+            "provenance": "scienti",
+            "source": "impactu",
+            "type": value,
+        }
+
+    def _expected_catalog_types(
+        self,
+        entity: str,
+        identifier: str,
+        occurrences: list[dict[str, Any]],
+        *,
+        native: bool,
+    ) -> list[dict[str, Any]]:
+        expected: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for occurrence in occurrences:
+            occurrence_id = str(occurrence.get("id") or identifier)
+            values: list[dict[str, Any]] = []
+            if native:
+                values.append(self._native_type(occurrence))
+            impactu_type = self._expected_impactu_type(entity, occurrence)
+            if not impactu_type:
+                self._finding(
+                    entity,
+                    "catalog_occurrence_without_exact_type",
+                    occurrence_id,
+                    {
+                        "route_rule": occurrence.get("route_rule"),
+                        "product_type": occurrence.get("product_type"),
+                        "source_section": occurrence.get("source_section"),
+                    },
+                )
+            else:
+                values.append(self._impactu_type(impactu_type))
+                self.metrics[entity]["catalog_occurrences_typed"] += 1
+            for value in values:
+                key = json.dumps(
+                    value, ensure_ascii=False, sort_keys=True, default=str
+                )
+                if key not in seen:
+                    seen.add(key)
+                    expected.append(value)
+        return expected
+
+    def _validate_catalog_types(
+        self,
+        entity: str,
+        identifier: str,
+        document: dict[str, Any],
+        *,
+        baseline: list[dict[str, Any]] | None = None,
+    ) -> None:
+        occurrences = self._occurrences(document)
+        expected = list(deepcopy(baseline or []))
+        expected.extend(
+            self._expected_catalog_types(
+                entity,
+                identifier,
+                occurrences,
+                native=baseline is None,
+            )
+        )
+        expected_counter = self._type_counter(expected)
+        expected_counter = Counter({key: 1 for key in expected_counter})
+        actual_counter = self._type_counter(document.get("types") or [])
+        if actual_counter != expected_counter:
+            self._finding(
+                entity,
+                "invalid_catalog_types",
+                identifier,
+                {
+                    "expected": sorted(expected_counter.elements()),
+                    "actual": sorted(actual_counter.elements()),
+                },
+            )
+        else:
+            self.metrics[entity]["catalog_types_verified"] += 1
+
+    def _locate_occurrence(
+        self, destinations: dict[str, str], occurrence: dict[str, Any]
+    ) -> list[tuple[str, dict[str, Any], dict[str, Any]]]:
+        matches: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+        signature = {
+            key: deepcopy(occurrence.get(key))
+            for key in OCCURRENCE_SIGNATURE_FIELDS
+        }
+        occurrence_id = str(signature["id"] or "")
+        if not occurrence_id:
+            return matches
+        query = {
+            "source_metadata.occurrences": {
+                "$elemMatch": signature,
+            }
+        }
+        for entity in ENTITY_KEYS:
+            for document in self.db[destinations[entity]].find(query):
+                for candidate in self._occurrences(document):
+                    candidate_signature = {
+                        key: deepcopy(candidate.get(key))
+                        for key in OCCURRENCE_SIGNATURE_FIELDS
+                    }
+                    if candidate_signature == signature:
+                        matches.append((entity, document, candidate))
+        return matches
+
+    @staticmethod
+    def _stable_occurrence(occurrence: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: deepcopy(occurrence.get(key))
+            for key in STABLE_OCCURRENCE_FIELDS
+            if key in occurrence
+        }
+
+    def _patent_source_record(
+        self, occurrence: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        source_kind = str(occurrence.get("source_kind") or "")
+        source_collection = str(occurrence.get("source_collection") or "")
+        source_id = str(occurrence.get("source_id") or "")
+        try:
+            record_index = int(occurrence.get("record_index"))
+        except (TypeError, ValueError):
+            return None
+        if not source_collection or not source_id or record_index < 0:
+            return None
+        if source_kind == "cvlac":
+            array_field = "patents"
+            query = {"_id": source_id}
+        elif source_kind == "gruplac":
+            array_field = "production"
+            query = {"group_code": source_id}
+        else:
+            return None
+        source = self.db[source_collection].find_one(
+            query,
+            {array_field: {"$slice": [record_index, 1]}},
+        )
+        values = (source or {}).get(array_field) or []
+        if len(values) != 1 or not isinstance(values[0], dict):
+            return None
+        record = deepcopy(values[0])
+        if source_kind == "gruplac":
+            record = prepare_gruplac_record(record)
+        return record
+
+    def _validate_patent_source_transition(
+        self,
+        entity: str,
+        identifier: str,
+        new_occurrence: dict[str, Any],
+        old_occurrence: dict[str, Any] | None = None,
+    ) -> None:
+        findings_before = sum(self.findings.values())
+        if old_occurrence is not None:
+            old_stable = self._stable_occurrence(old_occurrence)
+            new_stable = self._stable_occurrence(new_occurrence)
+            if old_stable != new_stable:
+                self._finding(
+                    "patents",
+                    "catalog_source_locator_changed",
+                    identifier,
+                    {"paths": _difference_paths(old_stable, new_stable)},
+                )
+        record = self._patent_source_record(new_occurrence)
+        if record is None:
+            self._finding(
+                "patents", "catalog_source_record_missing", identifier,
+                {
+                    key: new_occurrence.get(key)
+                    for key in OCCURRENCE_SIGNATURE_FIELDS
+                    if key != "id"
+                },
+            )
+            return
+        source_kind = str(new_occurrence.get("source_kind") or "")
+        route = (
+            route_cvlac("patents", record)
+            if source_kind == "cvlac"
+            else route_gruplac(record)
+        )
+        if not route:
+            self._finding(
+                "patents", "catalog_source_record_unroutable", identifier
+            )
+            return
+        actual_route = {
+            "entity": entity,
+            "rule": new_occurrence.get("route_rule"),
+            "identity_namespace": new_occurrence.get("identity_namespace", ""),
+        }
+        expected_route = {
+            "entity": route.get("entity"),
+            "rule": route.get("rule"),
+            "identity_namespace": route.get("ip_namespace", ""),
+        }
+        if actual_route != expected_route:
+            self._finding(
+                "patents", "invalid_catalog_source_route", identifier,
+                {"expected": expected_route, "actual": actual_route},
+            )
+        expected_metadata = _occurrence_metadata(entity, record)
+        actual_metadata = new_occurrence.get("metadata") or {}
+        if actual_metadata != expected_metadata:
+            self._finding(
+                "patents", "invalid_catalog_source_metadata", identifier,
+                {
+                    "paths": _difference_paths(
+                        expected_metadata, actual_metadata
+                    ),
+                    "expected": expected_metadata,
+                    "actual": actual_metadata,
+                },
+            )
+        if sum(self.findings.values()) == findings_before:
+            self.metrics["patents"]["source_occurrences_verified"] += 1
+
+    def _validate_catalog_work(self, document: dict[str, Any]) -> None:
+        identifier = str(document.get("_id") or "")
+        metadata = document.get("source_metadata") or {}
+        self.metrics["works"]["catalog_added_documents"] += 1
+        if metadata.get("normalizer_version") != "scienti-entity-normalizer-v4":
+            self._finding(
+                "works", "invalid_catalog_work_normalizer", identifier,
+                metadata.get("normalizer_version"),
+            )
+        if (
+            metadata.get("router_version") != "scienti-exact-router-v5"
+            or metadata.get("type_catalog_version") != IMPACTU_CATALOG.version
+            or metadata.get("type_catalog_sha256") != IMPACTU_CATALOG.source_sha256
+        ):
+            self._finding(
+                "works", "invalid_catalog_work_provenance", identifier,
+                {
+                    "router_version": metadata.get("router_version"),
+                    "type_catalog_version": metadata.get("type_catalog_version"),
+                    "type_catalog_sha256": metadata.get("type_catalog_sha256"),
+                },
+            )
+        if metadata.get("family") != "work":
+            self._finding(
+                "works", "invalid_catalog_work_family", identifier,
+                metadata.get("family"),
+            )
+        if (
+            metadata.get("identity_rule") != "source_scoped_insufficient_anchors"
+            or not str(metadata.get("identity_key") or "").startswith("source|works|")
+        ):
+            self._finding(
+                "works", "invalid_catalog_work_identity", identifier,
+                {
+                    "identity_rule": metadata.get("identity_rule"),
+                    "identity_key": metadata.get("identity_key"),
+                },
+            )
+        occurrences = self._occurrences(document)
+        if not occurrences:
+            self._finding("works", "catalog_work_without_occurrence", identifier)
+        elif len(occurrences) != 1:
+            self._finding(
+                "works", "catalog_work_occurrence_count", identifier,
+                len(occurrences),
+            )
+        self._validate_catalog_types("works", identifier, document)
+        for occurrence in occurrences:
+            occurrence_id = str(occurrence.get("id") or "")
+            rule = str(occurrence.get("route_rule") or "")
+            if not occurrence_id:
+                self._finding("works", "catalog_work_missing_occurrence_id", identifier)
+            if self._catalog_target(occurrence) != "works":
+                self._finding(
+                    "works", "unexpected_catalog_work_route", occurrence_id or identifier,
+                    rule,
+                )
+            self.metrics["works"]["catalog_added_occurrences"] += 1
+            self.metrics["works"][f"catalog_route.{rule or 'missing'}"] += 1
+
+    def _compare_catalog_patents(self, last_id: str) -> None:
+        query = {"_id": {"$gt": last_id}} if last_id else {}
+        cursor = self.db[self.old_destinations["patents"]].find(query).sort(
+            "_id", ASCENDING
+        ).batch_size(self.batch_size)
+        processed_since_save = 0
+        current_id = last_id
+        for document in cursor:
+            current_id = str(document.get("_id") or current_id)
+            self.metrics["patents"]["compared"] += 1
+            for old_occurrence in self._occurrences(document):
+                occurrence_id = str(old_occurrence.get("id") or "")
+                self.metrics["patents"]["old_occurrences"] += 1
+                if not occurrence_id:
+                    self._finding("patents", "old_occurrence_without_id", current_id)
+                    continue
+                matches = self._locate_occurrence(
+                    self.new_destinations, old_occurrence
+                )
+                if len(matches) != 1:
+                    self._finding(
+                        "patents", "catalog_occurrence_destination_count", occurrence_id,
+                        {"count": len(matches), "entities": [value[0] for value in matches]},
+                    )
+                    continue
+                entity, _, new_occurrence = matches[0]
+                expected_entity = self._catalog_target(new_occurrence)
+                if not expected_entity or entity != expected_entity:
+                    self._finding(
+                        "patents", "invalid_catalog_redistribution", occurrence_id,
+                        {
+                            "actual": entity,
+                            "expected": expected_entity,
+                            "route_rule": new_occurrence.get("route_rule"),
+                        },
+                    )
+                self._validate_patent_source_transition(
+                    entity, occurrence_id, new_occurrence, old_occurrence
+                )
+                self.metrics["patents"][f"redistributed_to_{entity}"] += 1
+            processed_since_save += 1
+            if processed_since_save >= self.progress_every:
+                self._save("patents", current_id)
+                processed_since_save = 0
+
+        for document in self.db[self.new_destinations["patents"]].find({}).batch_size(
+            self.batch_size
+        ):
+            self._validate_catalog_types(
+                "patents", str(document.get("_id") or ""), document
+            )
+            for new_occurrence in self._occurrences(document):
+                occurrence_id = str(new_occurrence.get("id") or "")
+                self.metrics["patents"]["new_occurrences"] += 1
+                if not occurrence_id:
+                    self._finding(
+                        "patents", "new_occurrence_without_id", str(document.get("_id") or "")
+                    )
+                    continue
+                if self._catalog_target(new_occurrence) != "patents":
+                    self._finding(
+                        "patents", "unexpected_new_patent_route", occurrence_id,
+                        new_occurrence.get("route_rule"),
+                    )
+                old_matches = self._locate_occurrence(
+                    self.old_destinations, new_occurrence
+                )
+                if len(old_matches) > 1:
+                    self._finding(
+                        "patents", "old_catalog_occurrence_destination_count", occurrence_id,
+                        {"count": len(old_matches), "entities": [value[0] for value in old_matches]},
+                    )
+                elif not old_matches:
+                    self.metrics["patents"]["catalog_added_occurrences"] += 1
+                    self._validate_patent_source_transition(
+                        "patents", occurrence_id, new_occurrence
+                    )
+                else:
+                    self.metrics["patents"][
+                        f"new_occurrences_from_old_{old_matches[0][0]}"
+                    ] += 1
+        self._save("patents", current_id, complete=True)
+
     def _compare_document(
         self, entity: str, old: dict[str, Any], new: dict[str, Any]
     ) -> None:
@@ -525,10 +1002,89 @@ class ScientiEntityVersionComparator:
         self.metrics[entity]["compared"] += 1
         old_meta = old.get("source_metadata") or {}
         new_meta = new.get("source_metadata") or {}
+        if self.transition_profile == "snapshot_refresh":
+            old_version = old_meta.get("normalizer_version")
+            new_version = new_meta.get("normalizer_version")
+            old_router = old_meta.get("router_version")
+            new_router = new_meta.get("router_version")
+            if (
+                old_version != self.config["old_normalizer_version"]
+                or new_version != self.config["new_normalizer_version"]
+                or old_router != self.config["old_router_version"]
+                or new_router != self.config["new_router_version"]
+            ):
+                self._finding(
+                    entity,
+                    "invalid_snapshot_provenance",
+                    identifier,
+                    {
+                        "old_normalizer": old_version,
+                        "new_normalizer": new_version,
+                        "old_router": old_router,
+                        "new_router": new_router,
+                    },
+                )
+            _normalize_updated(old)
+            _normalize_updated(new)
+            paths = _difference_paths(old, new)
+            if paths:
+                self.metrics[entity]["modified_documents"] += 1
+                for path in paths:
+                    self.metrics[entity][f"modified_path.{path}"] += 1
+            else:
+                self.metrics[entity]["unchanged_documents"] += 1
+            return
         old_version = old_meta.pop("normalizer_version", None)
         new_version = new_meta.pop("normalizer_version", None)
-        if self.transition_profile == "semantic_hardening_v3":
-            if old_version != "scienti-entity-normalizer-v2":
+        if self.transition_profile == "catalog_routing_v4":
+            old_router = old_meta.pop("router_version", None)
+            new_router = new_meta.pop("router_version", None)
+            old_catalog_version = old_meta.pop("type_catalog_version", None)
+            old_catalog_sha256 = old_meta.pop("type_catalog_sha256", None)
+            new_catalog_version = new_meta.pop("type_catalog_version", None)
+            new_catalog_sha256 = new_meta.pop("type_catalog_sha256", None)
+            if old_router != "scienti-exact-router-v4":
+                self._finding(
+                    entity, "invalid_old_router_version", identifier, old_router
+                )
+            if new_router != "scienti-exact-router-v5":
+                self._finding(
+                    entity, "invalid_new_router_version", identifier, new_router
+                )
+            if old_catalog_version is not None or old_catalog_sha256 is not None:
+                self._finding(
+                    entity, "unexpected_old_catalog_provenance", identifier,
+                    {
+                        "version": old_catalog_version,
+                        "sha256": old_catalog_sha256,
+                    },
+                )
+            if (
+                new_catalog_version != IMPACTU_CATALOG.version
+                or new_catalog_sha256 != IMPACTU_CATALOG.source_sha256
+            ):
+                self._finding(
+                    entity, "invalid_new_catalog_provenance", identifier,
+                    {
+                        "version": new_catalog_version,
+                        "sha256": new_catalog_sha256,
+                    },
+                )
+            else:
+                self.metrics[entity]["catalog_provenance_verified"] += 1
+            old_types = deepcopy(old.get("types") or [])
+            self._validate_catalog_types(
+                entity, identifier, new, baseline=old_types
+            )
+            old.pop("types", None)
+            new.pop("types", None)
+        if self.transition_profile in {"semantic_hardening_v3", "catalog_routing_v4"}:
+            expected_old_version = (
+                "scienti-entity-normalizer-v2"
+                if self.transition_profile == "semantic_hardening_v3"
+                else "scienti-entity-normalizer-v3"
+            )
+            if old_version != expected_old_version:
                 self._finding(
                     entity, "invalid_old_normalizer_version", identifier, old_version
                 )
@@ -542,7 +1098,7 @@ class ScientiEntityVersionComparator:
             self.metrics[entity]["normalizer_version_verified"] += 1
         if self.transition_profile == "semantic_hardening_v3":
             self._compare_v3_transition(entity, identifier, old, new)
-        else:
+        elif self.transition_profile != "catalog_routing_v4":
             self._compare_dates(entity, identifier, old, new)
         _normalize_updated(old)
         _normalize_updated(new)
@@ -576,6 +1132,9 @@ class ScientiEntityVersionComparator:
         )
 
     def _compare_entity(self, entity: str, last_id: str) -> None:
+        if self.transition_profile == "catalog_routing_v4" and entity == "patents":
+            self._compare_catalog_patents(last_id)
+            return
         query = {"_id": {"$gt": last_id}} if last_id else {}
         old_cursor = iter(
             self.db[self.old_destinations[entity]].find(query).sort("_id", ASCENDING).batch_size(self.batch_size)
@@ -592,7 +1151,9 @@ class ScientiEntityVersionComparator:
             new_id = str(new.get("_id")) if new is not None else None
             if new is None or (old is not None and old_id < new_id):
                 current_id = old_id or current_id
-                if self.transition_profile == "semantic_hardening_v3" and entity == "events":
+                if self.transition_profile == "snapshot_refresh":
+                    self.metrics[entity]["removed_documents"] += 1
+                elif self.transition_profile == "semantic_hardening_v3" and entity == "events":
                     self._record_reidentified(entity, "old", old)
                 else:
                     self.metrics[entity]["missing_in_new"] += 1
@@ -600,7 +1161,11 @@ class ScientiEntityVersionComparator:
                 old = _next(old_cursor)
             elif old is None or new_id < old_id:
                 current_id = new_id or current_id
-                if self.transition_profile == "semantic_hardening_v3" and entity == "events":
+                if self.transition_profile == "snapshot_refresh":
+                    self.metrics[entity]["added_documents"] += 1
+                elif self.transition_profile == "catalog_routing_v4" and entity == "works":
+                    self._validate_catalog_work(new)
+                elif self.transition_profile == "semantic_hardening_v3" and entity == "events":
                     self._record_reidentified(entity, "new", new)
                 else:
                     self.metrics[entity]["missing_in_old"] += 1

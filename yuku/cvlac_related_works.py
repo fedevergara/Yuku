@@ -26,9 +26,18 @@ DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s<>\"{}|\\^`\[\]]+", re.IGNORECASE)
 YEAR_RE = re.compile(r"(?<!\d)(19\d{2}|20\d{2})(?!\d)")
 ISSN_RE = re.compile(r"\bISSN\s*:\s*([\dXx]{4}-?[\dXx]{3}[\dXx])", re.IGNORECASE)
 ISBN_RE = re.compile(r"\bISBN\s*:\s*([0-9Xx](?:[0-9Xx]-?){8,16}[0-9Xx])", re.IGNORECASE)
+VALID_PAGES_RE = re.compile(r"^[0-9]+(?:\s*-\s*[0-9]+)?$")
+VALID_LANGUAGE_RE = re.compile(r"^[^\W\d_]+(?:[ /-][^\W\d_]+){0,5}$")
+SUSPICIOUS_PUBLISHER_RE = re.compile(
+    r"^(?:Autores\s*:|v\.(?=\s|:|$)|(?:vol|p[aá]gs?)\.?(?=\s|:|$)|"
+    r"isbn\b|issn\b|"
+    r"[0-9Xx](?:[0-9Xx]-?){8,16}[0-9Xx]$)",
+    re.IGNORECASE,
+)
 
 LABEL_ALIASES = {
     "nombre del producto": "product_name",
+    "nombre del capitulo": "chapter_name",
     "nombre del libro": "book_name",
     "fecha de presentacion": "presentation_date",
     "palabras": "keywords",
@@ -39,6 +48,14 @@ LABEL_ALIASES = {
     "persona(s) orientada(s)": "oriented_people",
     "tutor(es)/cotutor(es)": "tutors",
     "isbn": "isbn_label",
+    "editorial": "publisher",
+    "edicion": "edition",
+    "numero de edicion": "edition",
+    "numero de paginas": "pages",
+    "lugar de publicacion": "publication_place",
+    "medio de divulgacion": "dissemination_medium",
+    "idioma": "language",
+    "idiomas": "language",
     "institucion": "institution",
     "via de solicitud": "request_route",
     "nombre del solicitante de la patente": "patent_applicant",
@@ -108,6 +125,38 @@ def clean_text(value: str) -> str:
 
 def strip_value(value: str) -> str:
     return clean_text(value).strip(" ,.;:-")
+
+
+def clean_bibliographic_value(value: str) -> str:
+    value = strip_value(value)
+    if norm_text(value) in {"0", "n/a", "na", "no aplica", "no disponible"}:
+        return ""
+    return value
+
+
+def is_suspicious_publisher(value: str) -> bool:
+    """Return whether a publisher value is leaked metadata or an identifier."""
+    return bool(SUSPICIOUS_PUBLISHER_RE.match(clean_bibliographic_value(value)))
+
+
+def clean_publisher_value(value: str) -> str:
+    """Accept a bounded publisher name while leaving the raw record untouched."""
+    value = clean_bibliographic_value(value)
+    if len(value) > 300 or is_suspicious_publisher(value):
+        return ""
+    return value
+
+
+def clean_pages_value(value: str) -> str:
+    """Accept only one explicit page or a numeric page range."""
+    value = clean_bibliographic_value(value)
+    return value if VALID_PAGES_RE.fullmatch(value) else ""
+
+
+def clean_language_value(value: str) -> str:
+    """Accept a short language name, not prose matched after an inline label."""
+    value = clean_bibliographic_value(value)
+    return value if len(value) <= 60 and VALID_LANGUAGE_RE.fullmatch(value) else ""
 
 
 def uniq_keep_order(values: list[str]) -> list[str]:
@@ -263,6 +312,10 @@ def parse_html_labeled_fields(blockquote) -> dict[str, str]:
         for sibling in label_node.next_siblings:
             if getattr(sibling, "name", None) in {"i", "em"}:
                 break
+            if getattr(sibling, "name", None) in {"b", "strong"} and norm_text(
+                sibling.get_text(" ", strip=True)
+            ).rstrip(":") in {"areas", "palabras", "sectores"}:
+                break
             if hasattr(sibling, "get_text"):
                 values.append(sibling.get_text(" ", strip=True))
             else:
@@ -395,6 +448,88 @@ def extract_country(text: str) -> str:
     return strip_value(match.group(1)) if match else ""
 
 
+def extract_publisher(text: str, source_fields: dict[str, str]) -> str:
+    """Extract only explicitly labelled publisher/editorial values.
+
+    CVLAC has two stable layouts: ``Editorial:`` in newer labelled records
+    and the historical inline ``ed:`` form.  Both are bounded by known
+    bibliographic labels so a publisher can never absorb authors, pages or
+    subject metadata.
+    """
+    if source_fields.get("publisher"):
+        return clean_publisher_value(source_fields["publisher"])
+    patterns = (
+        r"\bEditorial\s*:\s*(.*?)"
+        r"(?=\s*,?\s*(?:Idiomas?|P[aá]ginas|Areas|Sectores|Palabras|"
+        r"Medio de divulgaci[oó]n|Lugar de publicaci[oó]n)\s*:|$)",
+        r"\bed\s*:\s*(.*?)"
+        r"(?=\s+(?:ISBN|ISSN|DOI)\s*:|\s+v\.|\s+p(?:ags?)?\.|"
+        r"\s+(?:Areas|Sectores|Palabras)\s*:|$)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text or "", flags=re.IGNORECASE)
+        if match:
+            value = clean_publisher_value(match.group(1))
+            if value:
+                return value
+    return ""
+
+
+def extract_book_title(
+    text: str,
+    source_fields: dict[str, str],
+    section_title: str,
+) -> str:
+    """Return the containing book title for chapters, never the work title."""
+    if norm_text(section_title) != "capitulos de libro":
+        return ""
+    if source_fields.get("book_name"):
+        return strip_value(source_fields["book_name"])
+    match = re.search(
+        r'"[^"\n]{3,1000}"\s*(.*?)\s*\.\s*En\s*:',
+        text or "",
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    value = re.sub(r"\s*\((?:ISSN|ISBN)\)\s*$", "", match.group(1), flags=re.IGNORECASE)
+    return strip_value(value)
+
+
+def extract_pages(text: str, source_fields: dict[str, str]) -> tuple[str, str, str]:
+    value = clean_pages_value(source_fields.get("pages", ""))
+    if not value:
+        match = re.search(
+            r"\bp(?:(?:[aá]gs?)|(?:[aá]ginas))?\.\s*:?[ ]*"
+            r"([0-9]+(?:\s*-\s*[0-9]+)?)",
+            text or "",
+            flags=re.IGNORECASE,
+        )
+        value = clean_pages_value(match.group(1)) if match else ""
+    numbers = re.fullmatch(r"([0-9]+)(?:\s*-\s*([0-9]+))?", value)
+    if not numbers:
+        return value, "", ""
+    start = numbers.group(1)
+    end = numbers.group(2) or ""
+    if start == "0":
+        start = ""
+    if end == "0":
+        end = ""
+    return value, start, end
+
+
+def extract_volume(text: str) -> str:
+    match = re.search(
+        r"\bv\.\s*:?\s*([^,;]*?)"
+        r"(?=\s*,?\s*(?:fasc\.?|ISBN|ISSN|DOI|ed|Editorial)\s*:|"
+        r"\s*,?\s*p(?:[aá]gs?|[aá]ginas)?\.?\s*:?(?=\s*(?:\d|[,;]|$))|"
+        r"\s*,?\s*(?:19|20)\d{2}\b|$)",
+        text or "",
+        flags=re.IGNORECASE,
+    )
+    return clean_bibliographic_value(match.group(1)) if match else ""
+
+
 def extract_title(
     text: str,
     fields: dict[str, Any],
@@ -404,7 +539,10 @@ def extract_title(
     if norm_text(section_title) == "patentes":
         return extract_patent_title(text)
 
-    for key in ["product_name", "book_name"]:
+    title_keys = ["product_name", "chapter_name"]
+    if norm_text(section_title) != "capitulos de libro":
+        title_keys.append("book_name")
+    for key in title_keys:
         if fields.get(key):
             return strip_value(str(fields[key]))
 
@@ -504,7 +642,9 @@ def extract_authors(
     if norm_text(section_title) == "patentes":
         return extract_patent_applicant(text, fields)
 
-    if fields.get("product_name") or fields.get("book_name"):
+    if fields.get("product_name") or fields.get("chapter_name") or (
+        fields.get("book_name") and norm_text(section_title) != "capitulos de libro"
+    ):
         return []
 
     if norm_text(product_type).startswith("trabajos dirigidos/tutorias"):
@@ -563,7 +703,15 @@ def parse_blockquote(profile_id: str, section_title: str, blockquote, profile_au
     text = clean_text(blockquote.get_text(" ", strip=True))
     fields = parse_labeled_fields(text)
     source_fields = parse_html_labeled_fields(blockquote)
+    preferred_fields = dict(fields)
+    preferred_fields.update(source_fields)
     product_type = extract_product_type(section_title, blockquote)
+    type_impactu = classify_target_category(section_title, product_type)
+    book_related = type_impactu in {
+        "Libro",
+        "Capitulo de libro",
+        "Publicaciones editoriales no especializadas",
+    }
     directed_title = ""
     directed_affiliation = ""
     if norm_text(section_title) == "trabajos dirigidos/tutorias":
@@ -571,18 +719,20 @@ def parse_blockquote(profile_id: str, section_title: str, blockquote, profile_au
             blockquote, profile_author_name
         )
     title = directed_title or extract_title(
-        text, fields, section_title, profile_author_name
+        text, preferred_fields, section_title, profile_author_name
     )
     doi = uniq_keep_order([normalize_doi(match) for match in DOI_RE.findall(text)])
     issn = uniq_keep_order([match.upper() for match in ISSN_RE.findall(text)])
     isbn_from_text = [normalize_isbn(match) for match in ISBN_RE.findall(text)]
     isbn_from_label = [normalize_isbn(str(fields["isbn_label"]))] if fields.get("isbn_label") else []
     is_patent = norm_text(section_title) == "patentes"
+    pages, start_page, end_page = extract_pages(text, source_fields)
+    publication_place = strip_value(source_fields.get("publication_place", ""))
 
     record = {
         "profile_id": profile_id,
         "product_type": product_type,
-        "type_impactu": classify_target_category(section_title, product_type),
+        "type_impactu": type_impactu,
         "source_section": ALLOWED_SECTION_ALIASES.get(
             norm_text(section_title), section_title
         ),
@@ -590,6 +740,18 @@ def parse_blockquote(profile_id: str, section_title: str, blockquote, profile_au
         "year": extract_year(text, fields),
         "affiliation": directed_affiliation or extract_affiliation(text, fields),
         "country": extract_country(text),
+        "publication_place": publication_place,
+        "publisher": extract_publisher(text, source_fields) if book_related else "",
+        "book_title": extract_book_title(text, source_fields, section_title),
+        "edition": clean_bibliographic_value(source_fields.get("edition", "")),
+        "volume": extract_volume(text),
+        "pages": pages,
+        "start_page": start_page,
+        "end_page": end_page,
+        "dissemination_medium": strip_value(
+            source_fields.get("dissemination_medium", "")
+        ),
+        "language": clean_language_value(source_fields.get("language", "")),
         "keywords": split_terms(str(fields.get("keywords", ""))),
         "areas": split_areas(str(fields.get("areas", ""))),
         "advisor_role": normalize_advisor_role(str(fields.get("advisor_role", ""))),
@@ -627,7 +789,7 @@ def parse_blockquote(profile_id: str, section_title: str, blockquote, profile_au
         record["authors"] = extract_authors(
             text,
             title,
-            fields,
+            preferred_fields,
             product_type,
             section_title,
             profile_author_name,

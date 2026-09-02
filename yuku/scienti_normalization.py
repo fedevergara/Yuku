@@ -12,18 +12,18 @@ from pymongo import ASCENDING, ReplaceOne
 from pymongo.errors import AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError
 
 from yuku.cvlac_priority_snapshot import CvlacPrioritySnapshot
-from yuku.cvlac_related_works import normalize_related_works_document
+from yuku.cvlac_related_works import norm_text, normalize_related_works_document
 from yuku.gruplac_related_works import normalize_gruplac_document
 
 
 CVLAC_PARSER_NAME = "yuku.cvlac_related_works"
-CVLAC_PARSER_VERSION = "3.0.0"
+CVLAC_PARSER_VERSION = "3.1.5"
 CVLAC_NORMALIZATION_RUNS = "scienti_cvlac_normalization_runs"
 CVLAC_AUDIT_RUNS = "scienti_cvlac_normalization_audits"
 GRUPLAC_AUDIT_RUNS = "scienti_gruplac_normalization_audits"
 GRUPLAC_NORMALIZATION_RUNS = "scienti_gruplac_normalization_runs"
 GRUPLAC_PARSER_NAME = "yuku.gruplac_related_works"
-GRUPLAC_PARSER_VERSION = "3.0.0"
+GRUPLAC_PARSER_VERSION = "3.1.4"
 
 RUN_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,79}")
 DOI_RE = re.compile(r"^https://doi\.org/10\.\d{4,9}/\S+$", re.IGNORECASE)
@@ -1347,6 +1347,39 @@ def _audit_records(
     return len(records)
 
 
+def _count_bibliographic_metadata(records: Any, totals: Counter) -> None:
+    """Record extraction coverage without treating missing source data as error."""
+    if not isinstance(records, list):
+        return
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        value = norm_text(
+            f"{record.get('type_impactu', '')} {record.get('source_section', '')}"
+        )
+        if "libro" not in value and "editorial" not in value:
+            continue
+        totals["records"] += 1
+        if "capitulo" in value:
+            totals["chapters"] += 1
+        elif "editorial" in value:
+            totals["editorial_products"] += 1
+        else:
+            totals["books"] += 1
+        for field in (
+            "publisher",
+            "book_title",
+            "edition",
+            "volume",
+            "pages",
+            "publication_place",
+            "language",
+            "dissemination_medium",
+        ):
+            if str(record.get(field) or "").strip():
+                totals[f"with_{field}"] += 1
+
+
 class CvlacNormalizationAuditor:
     """Perform a full coverage, provenance and metadata audit of normalized CVLAC."""
 
@@ -1424,6 +1457,7 @@ class CvlacNormalizationAuditor:
         status_counts: Counter = Counter()
         parser_counts: Counter = Counter()
         distributions: Counter = Counter()
+        bibliographic_totals: Counter = Counter()
         projection = {
             "profile_status": 1,
             "parser": 1,
@@ -1483,6 +1517,10 @@ class CvlacNormalizationAuditor:
                         distributions,
                     )
                     totals[section] += count
+                    if section == "production":
+                        _count_bibliographic_metadata(
+                            document.get(section), bibliographic_totals
+                        )
                     if document.get(count_field) != count:
                         recorder.add(
                             f"{section}_count_mismatch",
@@ -1541,6 +1579,9 @@ class CvlacNormalizationAuditor:
                 "profile_status_counts": dict(sorted(status_counts.items())),
                 "parser_version_counts": dict(sorted(parser_counts.items())),
                 "content_counts": dict(sorted(totals.items())),
+                "bibliographic_metadata_counts": dict(
+                    sorted(bibliographic_totals.items())
+                ),
                 "type_impactu_distribution": [
                     {"value": key, "count": value}
                     for key, value in sorted(distributions.items())
@@ -1675,6 +1716,7 @@ class GruplacNormalizationAuditor:
         }
         totals: Counter = Counter()
         distributions: Counter = Counter()
+        bibliographic_totals: Counter = Counter()
         parser_counts: Counter = Counter()
         for document in self.db[self.normalized_collection].find(
             {}, {"group_code": 1, "group_name": 1, "group_status": 1, "parser": 1, "source": 1, "members_count": 1, "members": 1, "production_count": 1, "production": 1}
@@ -1723,6 +1765,9 @@ class GruplacNormalizationAuditor:
                 recorder, code, "production", document.get("production"), distributions
             )
             totals["production"] += production_count
+            _count_bibliographic_metadata(
+                document.get("production"), bibliographic_totals
+            )
             totals["members"] += len(members)
             if document.get("production_count") != production_count:
                 recorder.add(
@@ -1843,6 +1888,9 @@ class GruplacNormalizationAuditor:
             "download_status_counts": dict(sorted(state_counts.items())),
             "parser_version_counts": dict(sorted(parser_counts.items())),
             "content_counts": dict(sorted(totals.items())),
+            "bibliographic_metadata_counts": dict(
+                sorted(bibliographic_totals.items())
+            ),
             "type_impactu_cardinality": len(distributions),
             "type_impactu_distribution_top_100": [
                 {"value": key, "count": value}

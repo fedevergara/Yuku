@@ -27,10 +27,13 @@ from yuku.scienti_profiles import ScientiProfileDownloader
 from yuku.scienti_search import ScientiIdentifierResolver
 from yuku.scienti_entities import ScientiEntityNormalizationRun
 from yuku.scienti_entity_graph import ScientiExactEntityGraphBuilder
+from yuku.scienti_entity_materialization import ScientiEntitySnapshotMaterializer
 from yuku.scienti_entity_comparison import ScientiEntityVersionComparator
 from yuku.scienti_entity_publication import ScientiEntityPublisher
 from yuku.scienti_auxiliary_audit import ScientiAuxiliarySemanticAudit
 from yuku.scienti_project_audit import ScientiProjectSemanticAudit
+from yuku.scienti_bibliographic_audit import ScientiBibliographicEnrichmentAuditor
+from yuku.scienti_release import ScientiFinalReleaseManager
 from yuku.scienti_pipeline import (
     ScientiFullPipeline,
     load_pipeline_config,
@@ -695,6 +698,7 @@ class Yuku:
         batch_size: int = 500,
         max_title_group_size: int = 250,
         candidate_partitions: int = 64,
+        publish_pointer: bool = True,
     ):
         """Build and atomically publish an audited, checkpointed full graph."""
         gate = validate_scienti_graph_gate(
@@ -723,6 +727,7 @@ class Yuku:
             batch_size=batch_size,
             max_title_group_size=max_title_group_size,
             candidate_partitions=candidate_partitions,
+            publish_pointer=publish_pointer,
             gate=gate,
         )
         return builder.build_checkpointed(graph_run_name)
@@ -756,6 +761,7 @@ class Yuku:
         measured_collection: str = "minciencias_measured_products",
         graph_collection: str = "",
         links_collection: str = "minciencias_measured_product_links",
+        target_entity: str = "works",
         batch_size: int = 500,
         progress_every: int = 10000,
         max_candidates: int = 100,
@@ -775,6 +781,7 @@ class Yuku:
             measured_collection=measured_collection,
             graph_collection=graph_collection,
             links_collection=links_collection,
+            target_entity=target_entity,
             batch_size=batch_size,
             progress_every=progress_every,
             max_candidates=max_candidates,
@@ -790,9 +797,11 @@ class Yuku:
         graph_collection: str = "",
         measured_collection: str = "minciencias_measured_products",
         links_collection: str = "minciencias_measured_product_links",
+        target_entity: str = "works",
         batch_size: int = 500,
         progress_every: int = 10000,
         replace: bool = False,
+        publish_pointer: bool = True,
     ):
         """Publish a lossless graph copy enriched with linked measurements."""
         if not graph_collection:
@@ -808,9 +817,63 @@ class Yuku:
             measured_collection=measured_collection,
             links_collection=links_collection,
             target_collection=target_collection,
+            target_entity=target_entity,
             batch_size=batch_size,
             progress_every=progress_every,
             replace=replace,
+            publish_pointer=publish_pointer,
+        )
+
+    def publish_scienti_final_release(
+        self,
+        *,
+        release_name: str,
+        collections: dict[str, str],
+        materialization_runs: dict[str, str],
+        audit_name: str = "",
+    ):
+        """Publish works, projects, patents and events as one audited release."""
+        return ScientiFinalReleaseManager(self.db).publish(
+            release_name=release_name,
+            collections=collections,
+            materialization_runs=materialization_runs,
+            audit_name=audit_name,
+        )
+
+    def audit_scienti_bibliographic_enrichment(
+        self,
+        *,
+        audit_name: str,
+        run_name: str,
+        base_collection: str,
+        final_collection: str,
+        materialization_run_name: str,
+    ):
+        """Audit final explicit book and publisher metadata before release."""
+        return ScientiBibliographicEnrichmentAuditor(self.db).audit(
+            audit_name=audit_name,
+            run_name=run_name,
+            base_collection=base_collection,
+            final_collection=final_collection,
+            materialization_run_name=materialization_run_name,
+        )
+
+    def cleanup_scienti_final_release(
+        self,
+        *,
+        cleanup_name: str,
+        release_name: str,
+        candidates,
+        protected=(),
+        reset_entity_publication: bool = True,
+    ):
+        """Remove only explicit intermediates of the current final release."""
+        return ScientiFinalReleaseManager(self.db).cleanup(
+            cleanup_name=cleanup_name,
+            release_name=release_name,
+            candidates=candidates,
+            protected=protected,
+            reset_entity_publication=reset_entity_publication,
         )
 
     def compare_scienti_cvlac_evaluation(self, run_name: str):
@@ -1037,6 +1100,24 @@ class Yuku:
             progress_every=progress_every,
             max_candidate_group=max_candidate_group,
             replace=replace,
+        ).run()
+
+    def materialize_scienti_entity_snapshot(
+        self,
+        entity: str,
+        run_name: str,
+        source_collection: str,
+        target_collection: str,
+        entity_run_name: str,
+    ):
+        """Atomically materialize an audited entity that needs no graph."""
+        return ScientiEntitySnapshotMaterializer(
+            self.db,
+            entity=entity,
+            run_name=run_name,
+            source_collection=source_collection,
+            target_collection=target_collection,
+            entity_run_name=entity_run_name,
         ).run()
 
     def audit_scienti_projects_semantics(

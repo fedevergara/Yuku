@@ -22,8 +22,12 @@ from yuku.scienti_routing import IMPACTU_CATALOG, route_minciencias
 
 
 MEASUREMENT_SCHEMA_VERSION = "kahi-works-minciencias-measurement-v1"
-MEASUREMENT_LINK_VERSION = "minciencias-measurement-link-v1"
+MEASUREMENT_LINK_VERSION = "minciencias-measurement-link-v3"
 MEASUREMENT_RUNS = "minciencias_measurement_runs"
+SCIENTI_FINAL_ENTITY_PUBLICATIONS = "scienti_final_entity_publications"
+MEASUREMENT_TARGET_ENTITIES = frozenset(
+    {"works", "projects", "patents", "events"}
+)
 BOGOTA = ZoneInfo("America/Bogota")
 RUN_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,79}")
 PRODUCT_OWNER_RE = re.compile(r"(\d{9,11})-(\d{1,7})$")
@@ -102,6 +106,156 @@ def empty_kahi_work() -> dict[str, Any]:
         "primary_topic": {},
         "topics": [],
     }
+
+
+def complete_kahi_work_shape(value: dict[str, Any]) -> dict[str, Any]:
+    """Return a full Kahi work shape without inventing bibliographic data."""
+    defaults = empty_kahi_work()
+    output = defaults | deepcopy(value)
+    for field, default in defaults.items():
+        if isinstance(default, list) and not isinstance(output.get(field), list):
+            output[field] = []
+        elif isinstance(default, dict) and not isinstance(output.get(field), dict):
+            output[field] = {}
+    output["author_count"] = len(output["authors"])
+    return output
+
+
+def empty_kahi_measurement_entity(target_entity: str) -> dict[str, Any]:
+    """Return the stable Kahi-facing shape for one routed entity."""
+    if target_entity == "works":
+        return empty_kahi_work()
+    if target_entity == "projects":
+        return {
+            "titles": [], "updated": [], "abstract": "", "types": [],
+            "external_ids": [], "external_urls": [], "date_init": None,
+            "date_end": None, "year_init": None, "year_end": None,
+            "author_count": 0, "authors": [], "ranking": [], "groups": [],
+        }
+    if target_entity == "patents":
+        return {
+            "titles": [], "updated": [], "types": [], "external_ids": [],
+            "external_urls": [], "author_count": 0, "authors": [],
+            "ranking": [], "groups": [],
+        }
+    if target_entity == "events":
+        return {
+            "titles": [], "updated": [], "abstract": "", "types": [],
+            "external_ids": [], "external_urls": [], "date_held": None,
+            "year_held": None, "author_count": 0, "authors": [],
+            "ranking": [], "groups": [],
+        }
+    raise ValueError(
+        "target_entity must be works, projects, patents or events"
+    )
+
+
+def complete_kahi_entity_shape(
+    value: dict[str, Any], target_entity: str
+) -> dict[str, Any]:
+    """Complete only the matrices that belong to the selected entity."""
+    defaults = empty_kahi_measurement_entity(target_entity)
+    output = defaults | deepcopy(value)
+    for field, default in defaults.items():
+        if isinstance(default, list) and not isinstance(output.get(field), list):
+            output[field] = []
+        elif isinstance(default, dict) and not isinstance(output.get(field), dict):
+            output[field] = {}
+    output["author_count"] = len(output["authors"])
+    return output
+
+
+def standalone_official_work(
+    product: dict[str, Any],
+    link: dict[str, Any],
+    *,
+    materialized_at: int,
+) -> dict[str, Any]:
+    """Keep an unmatched official work as its own conservative identity."""
+    output = complete_kahi_work_shape(product)
+    metadata = output.setdefault("bibliographic_info", {}).setdefault(
+        "minciencias", {}
+    )
+    metadata["identity_status"] = "official_standalone"
+    metadata["link"] = {
+        "status": str(link.get("status") or "unlinked"),
+        "rule": str(link.get("rule") or ""),
+        "graph_collection": str(link.get("graph_collection") or ""),
+        "candidate_count": int(link.get("candidate_count") or 0),
+        "candidates": deepcopy(link.get("candidates") or []),
+    }
+    output["updated"] = [
+        item
+        for item in output["updated"]
+        if item.get("source") != "minciencias_materialization"
+    ]
+    output["updated"].append(
+        {"source": "minciencias_materialization", "time": materialized_at}
+    )
+    return output
+
+
+def standalone_official_entity(
+    product: dict[str, Any],
+    link: dict[str, Any],
+    *,
+    target_entity: str,
+    materialized_at: int,
+) -> dict[str, Any]:
+    """Keep unmatched official evidence without inventing people or dates."""
+    if target_entity == "works":
+        return standalone_official_work(
+            product, link, materialized_at=materialized_at
+        )
+    output = empty_kahi_measurement_entity(target_entity)
+    output.update(
+        {
+            "_id": product["_id"],
+            "updated": [
+                {"source": "minciencias", "time": materialized_at},
+                {"source": "minciencias_materialization", "time": materialized_at},
+            ],
+            "titles": deepcopy(product.get("titles") or []),
+            "types": deepcopy(product.get("types") or []),
+            "external_ids": deepcopy(product.get("external_ids") or []),
+            "external_urls": deepcopy(product.get("external_urls") or []),
+            "ranking": deepcopy(product.get("ranking") or []),
+            "groups": deepcopy(product.get("groups") or []),
+            "authors": [],
+            "author_count": 0,
+        }
+    )
+    minciencias = deepcopy(
+        ((product.get("bibliographic_info") or {}).get("minciencias") or {})
+    )
+    minciencias["identity_status"] = "official_standalone"
+    minciencias["link"] = {
+        "status": str(link.get("status") or "unlinked"),
+        "rule": str(link.get("rule") or ""),
+        "graph_collection": str(link.get("graph_collection") or ""),
+        "candidate_count": int(link.get("candidate_count") or 0),
+        "candidates": deepcopy(link.get("candidates") or []),
+    }
+    output["source_metadata"] = {
+        "schema_version": "kahi-scienti-official-measurement-v1",
+        "target_entity": target_entity,
+        "family": target_entity[:-1] if target_entity.endswith("s") else target_entity,
+        "identity_key": f"official|minciencias|{product['_id']}",
+        "identity_rule": "official_product_id",
+        "official_only": True,
+        "occurrences": [
+            {
+                "id": str(product["_id"]),
+                "source_kind": "minciencias_open_data",
+                "source_collection": "gruplac_production_data",
+                "source_id": str(product["_id"]),
+                "record_index": 0,
+                "metadata": deepcopy(minciencias),
+            }
+        ],
+        "minciencias": minciencias,
+    }
+    return complete_kahi_entity_shape(output, target_entity)
 
 
 def _unique_dicts(values: Iterable[dict[str, Any]], key) -> list[dict[str, Any]]:
@@ -386,18 +540,63 @@ def graph_work_families(work: dict[str, Any]) -> set[str]:
     return families
 
 
-def graph_link_index_document(work: dict[str, Any]) -> dict[str, Any]:
+def graph_entity_years(
+    document: dict[str, Any], target_entity: str
+) -> list[int]:
+    """Return only explicit temporal evidence already present in the graph."""
+    values: list[Any] = []
+    if target_entity == "works":
+        values.append(document.get("year_published"))
+    elif target_entity == "projects":
+        values.extend((document.get("year_init"), document.get("year_end")))
+    elif target_entity == "events":
+        values.append(document.get("year_held"))
+    elif target_entity != "patents":
+        raise ValueError(
+            "target_entity must be works, projects, patents or events"
+        )
+    evidence = (
+        ((document.get("source_metadata") or {}).get("entity_graph") or {}).get(
+            "evidence"
+        )
+        or {}
+    )
+    values.extend(evidence.get("years") or [])
+    return sorted(
+        {
+            value
+            for value in values
+            if isinstance(value, int) and 1900 <= value <= 2100
+        }
+    )
+
+
+def graph_link_index_document(
+    work: dict[str, Any], target_entity: str = "works"
+) -> dict[str, Any]:
+    families = (
+        graph_work_families(work)
+        if target_entity == "works"
+        else {target_entity}
+    )
+    title_keys = sorted(
+        {
+            title_key
+            for value in work.get("titles") or []
+            if isinstance(value, dict)
+            and (title_key := normalize_title(value.get("title") or ""))
+        }
+    )
+    years = graph_entity_years(work, target_entity)
     return {
         "_id": work["_id"],
-        "title_keys": sorted(
-            {
-                title_key
-                for value in work.get("titles") or []
-                if isinstance(value, dict)
-                and (title_key := normalize_title(value.get("title") or ""))
-            }
-        ),
-        "year": work.get("year_published"),
+        "title_keys": title_keys,
+        "years": years,
+        "title_year_keys": [
+            f"{title_key}\u0000{year}"
+            for title_key in title_keys
+            for year in years
+        ],
         "author_ids": sorted(
             {
                 str(value.get("id") or "")
@@ -412,12 +611,13 @@ def graph_link_index_document(work: dict[str, Any]) -> dict[str, Any]:
                 if isinstance(value, dict) and value.get("id")
             }
         ),
-        "families": sorted(graph_work_families(work)),
+        "families": sorted(families),
     }
 
 
 def product_linkage_terms(product: dict[str, Any]) -> dict[str, Any]:
     minciencias = (product.get("bibliographic_info") or {}).get("minciencias") or {}
+    routed_entity = str(minciencias.get("target_entity") or "")
     return {
         "title_keys": sorted(
             {
@@ -442,7 +642,15 @@ def product_linkage_terms(product: dict[str, Any]) -> dict[str, Any]:
                 if value.get("id")
             }
         ),
-        "families": sorted(official_product_families(product)),
+        "families": sorted(
+            official_product_families(product)
+            if routed_entity == "works"
+            else (
+                {routed_entity}
+                if routed_entity in MEASUREMENT_TARGET_ENTITIES
+                else set()
+            )
+        ),
     }
 
 
@@ -506,9 +714,13 @@ def resolve_measured_product_link(
         status = "ambiguous"
         rule = "title_year_without_safe_anchor"
 
+    minciencias = (product.get("bibliographic_info") or {}).get(
+        "minciencias"
+    ) or {}
     return {
         "_id": product["_id"],
         "schema_version": MEASUREMENT_LINK_VERSION,
+        "target_entity": str(minciencias.get("target_entity") or ""),
         "status": status,
         "work_id": work_id,
         "rule": rule,
@@ -535,8 +747,13 @@ def enrich_graph_work(
     links: list[dict[str, Any]],
     *,
     enriched_at: int | None = None,
+    target_entity: str = "works",
 ) -> dict[str, Any]:
     """Attach official measurement evidence without changing authorship."""
+    if target_entity not in MEASUREMENT_TARGET_ENTITIES:
+        raise ValueError(
+            "target_entity must be works, projects, patents or events"
+        )
     output = deepcopy(work)
     enriched_at = int(time()) if enriched_at is None else int(enriched_at)
     original_authors = deepcopy(output.get("authors") or [])
@@ -545,7 +762,10 @@ def enrich_graph_work(
     output.setdefault("types", [])
     output.setdefault("ranking", [])
     output.setdefault("groups", [])
-    output.setdefault("bibliographic_info", {})
+    if target_entity == "works":
+        output.setdefault("bibliographic_info", {})
+    else:
+        output.setdefault("source_metadata", {})
     output.setdefault("updated", [])
 
     _append_unique(
@@ -609,12 +829,17 @@ def enrich_graph_work(
             for product in products
         ],
     }
-    existing_minciencias = output["bibliographic_info"].get("minciencias")
+    metadata_container = (
+        output["bibliographic_info"]
+        if target_entity == "works"
+        else output["source_metadata"]
+    )
+    existing_minciencias = metadata_container.get("minciencias")
     if isinstance(existing_minciencias, dict):
         merged = deepcopy(existing_minciencias)
         merged.update(minciencias_output)
         minciencias_output = merged
-    output["bibliographic_info"]["minciencias"] = minciencias_output
+    metadata_container["minciencias"] = minciencias_output
     output["updated"] = [
         value for value in output["updated"] if value.get("source") != "minciencias"
     ]
@@ -786,6 +1011,7 @@ class MincienciasMeasurementPipeline:
             destination.create_index("groups.id")
             destination.create_index("bibliographic_info.minciencias.owner_ids")
             destination.create_index("bibliographic_info.minciencias.eligible_for_works")
+            destination.create_index("bibliographic_info.minciencias.target_entity")
             destination.create_index("bibliographic_info.minciencias.measurements.group_id")
             summary = {
                 "run_name": run_name,
@@ -822,6 +1048,7 @@ class MincienciasMeasurementPipeline:
         index_collection: str,
         batch_size: int,
         progress_every: int,
+        target_entity: str,
     ) -> int:
         index = self.db[index_collection]
         index.drop()
@@ -830,12 +1057,16 @@ class MincienciasMeasurementPipeline:
         projection = {
             "titles": 1,
             "year_published": 1,
+            "year_init": 1,
+            "year_end": 1,
+            "year_held": 1,
             "authors.id": 1,
             "groups.id": 1,
             "types": 1,
+            "source_metadata.entity_graph.evidence.years": 1,
         }
         for work in self.db[graph_collection].find({}, projection).batch_size(batch_size):
-            buffer.append(graph_link_index_document(work))
+            buffer.append(graph_link_index_document(work, target_entity))
             processed += 1
             if len(buffer) >= batch_size:
                 _bulk_replace(index, buffer)
@@ -846,7 +1077,7 @@ class MincienciasMeasurementPipeline:
                     flush=True,
                 )
         _bulk_replace(index, buffer)
-        index.create_index([("title_keys", ASCENDING), ("year", ASCENDING)])
+        index.create_index("title_year_keys")
         index.create_index("author_ids")
         index.create_index("group_ids")
         return processed
@@ -858,6 +1089,7 @@ class MincienciasMeasurementPipeline:
         measured_collection: str,
         graph_collection: str,
         links_collection: str,
+        target_entity: str = "works",
         batch_size: int = 500,
         progress_every: int = 10000,
         max_candidates: int = 100,
@@ -870,6 +1102,10 @@ class MincienciasMeasurementPipeline:
             (links_collection, "links_collection"),
         ):
             _validate_collection(value, label)
+        if target_entity not in MEASUREMENT_TARGET_ENTITIES:
+            raise ValueError(
+                "target_entity must be works, projects, patents or events"
+            )
         if batch_size < 1 or progress_every < 1 or max_candidates < 1 or limit < 0:
             raise ValueError("link batch/progress/candidate values must be positive")
         missing = sorted(
@@ -884,6 +1120,7 @@ class MincienciasMeasurementPipeline:
             "measured_collection": measured_collection,
             "graph_collection": graph_collection,
             "links_collection": links_collection,
+            "target_entity": target_entity,
             "batch_size": batch_size,
             "max_candidates": max_candidates,
             "limit": limit,
@@ -916,6 +1153,7 @@ class MincienciasMeasurementPipeline:
                 index_collection=index_collection,
                 batch_size=batch_size,
                 progress_every=progress_every,
+                target_entity=target_entity,
             )
             self.runs.update_one(
                 {"_id": run_name},
@@ -925,7 +1163,13 @@ class MincienciasMeasurementPipeline:
         links = self.db[links_collection]
         graph_index = self.db[index_collection]
         last_product_id = str(run.get("last_product_id") or "")
-        query = {"_id": {"$gt": last_product_id}} if last_product_id else {}
+        target_query: dict[str, Any] = {
+            "bibliographic_info.minciencias.target_entity": target_entity,
+            "titles.0.title": {"$exists": True, "$ne": ""},
+        }
+        query = deepcopy(target_query)
+        if last_product_id:
+            query["_id"] = {"$gt": last_product_id}
         cursor = self.db[measured_collection].find(query).sort("_id", ASCENDING)
         buffer = []
         processed = int(run.get("processed_products") or 0)
@@ -957,7 +1201,7 @@ class MincienciasMeasurementPipeline:
                     for year in terms["years"]:
                         matches = list(
                             graph_index.find(
-                                {"title_keys": title_key, "year": year}
+                                {"title_year_keys": f"{title_key}\u0000{year}"}
                             ).limit(max_candidates + 1)
                         )
                         if len(matches) > max_candidates:
@@ -984,10 +1228,8 @@ class MincienciasMeasurementPipeline:
             flush()
             links.create_index([("status", ASCENDING), ("work_id", ASCENDING)])
             links.create_index("rule")
-            expected = min(
-                limit or self.db[measured_collection].count_documents({}),
-                self.db[measured_collection].count_documents({}),
-            )
+            eligible = self.db[measured_collection].count_documents(target_query)
+            expected = min(limit or eligible, eligible)
             actual = links.count_documents({})
             critical = int(actual != expected)
             summary = {
@@ -997,8 +1239,23 @@ class MincienciasMeasurementPipeline:
                 "graph_collection": graph_collection,
                 "links_collection": links_collection,
                 "graph_works_indexed": graph_indexed,
+                "graph_entities_indexed": graph_indexed,
+                "target_entity": target_entity,
                 "products": actual,
                 "expected_products": expected,
+                "excluded_other_entities": self.db[measured_collection].count_documents(
+                    {
+                        "bibliographic_info.minciencias.target_entity": {
+                            "$ne": target_entity
+                        }
+                    }
+                ),
+                "excluded_missing_titles": self.db[measured_collection].count_documents(
+                    {
+                        "bibliographic_info.minciencias.target_entity": target_entity,
+                        "titles.0.title": {"$exists": False},
+                    }
+                ),
                 "status_counts": dict(counters),
                 "critical_anomalies": critical,
             }
@@ -1028,9 +1285,11 @@ class MincienciasMeasurementPipeline:
         measured_collection: str,
         links_collection: str,
         target_collection: str,
+        target_entity: str = "works",
         batch_size: int = 500,
         progress_every: int = 10000,
         replace: bool = False,
+        publish_pointer: bool = True,
     ) -> dict[str, Any]:
         for value, label in (
             (graph_collection, "graph_collection"),
@@ -1039,6 +1298,10 @@ class MincienciasMeasurementPipeline:
             (target_collection, "target_collection"),
         ):
             _validate_collection(value, label)
+        if target_entity not in MEASUREMENT_TARGET_ENTITIES:
+            raise ValueError(
+                "target_entity must be works, projects, patents or events"
+            )
         if batch_size < 1 or progress_every < 1:
             raise ValueError("batch_size and progress_every must be positive")
         missing = sorted(
@@ -1052,6 +1315,11 @@ class MincienciasMeasurementPipeline:
             raise RuntimeError(
                 f"links were built for {link_graphs}, not {graph_collection!r}"
             )
+        link_targets = self.db[links_collection].distinct("target_entity")
+        if link_targets and set(link_targets) != {target_entity}:
+            raise RuntimeError(
+                f"links target {link_targets}, not {target_entity!r}"
+            )
         if target_collection in {
             graph_collection,
             measured_collection,
@@ -1064,7 +1332,9 @@ class MincienciasMeasurementPipeline:
             "measured_collection": measured_collection,
             "links_collection": links_collection,
             "target_collection": target_collection,
+            "target_entity": target_entity,
             "batch_size": batch_size,
+            "publish_pointer": publish_pointer,
         }
         if replace:
             if target_collection in self.db.list_collection_names():
@@ -1085,7 +1355,14 @@ class MincienciasMeasurementPipeline:
                     previous_collection=str(run.get("previous_collection") or ""),
                     enriched=int(run.get("enriched_works") or 0),
                     attached_products=int(run.get("attached_products") or 0),
+                    standalone_products=int(run.get("standalone_products") or 0),
+                    standalone_status_counts=deepcopy(
+                        run.get("standalone_status_counts") or {}
+                    ),
                     links_collection=links_collection,
+                    measured_collection=measured_collection,
+                    target_entity=target_entity,
+                    publish_pointer=publish_pointer,
                 )
             raise ValueError(
                 f"versioned enriched graph {target_collection!r} already exists"
@@ -1098,6 +1375,10 @@ class MincienciasMeasurementPipeline:
         processed = int(run.get("processed_works") or 0)
         enriched = int(run.get("enriched_works") or 0)
         attached_products = int(run.get("attached_products") or 0)
+        standalone_products = int(run.get("standalone_products") or 0)
+        standalone_status_counts = Counter(
+            run.get("standalone_status_counts") or {}
+        )
         enriched_at = int(run.get("enriched_at") or time())
         self.runs.update_one(
             {"_id": run_name},
@@ -1126,6 +1407,7 @@ class MincienciasMeasurementPipeline:
             }
             documents = []
             for work in batch:
+                work = complete_kahi_entity_shape(work, target_entity)
                 work_links = links_by_work.get(work["_id"], [])
                 work_products = [
                     products[value["_id"]]
@@ -1134,7 +1416,11 @@ class MincienciasMeasurementPipeline:
                 ]
                 if work_products:
                     work = enrich_graph_work(
-                        work, work_products, work_links, enriched_at=enriched_at
+                        work,
+                        work_products,
+                        work_links,
+                        enriched_at=enriched_at,
+                        target_entity=target_entity,
                     )
                     enriched += 1
                     attached_products += len(work_products)
@@ -1160,26 +1446,147 @@ class MincienciasMeasurementPipeline:
                     process_batch(batch)
                     batch = []
             process_batch(batch)
+
+            last_standalone_id = str(run.get("last_standalone_product_id") or "")
+            standalone_query: dict[str, Any] = {"status": {"$ne": "linked"}}
+            if last_standalone_id:
+                standalone_query["_id"] = {"$gt": last_standalone_id}
+            standalone_cursor = self.db[links_collection].find(
+                standalone_query
+            ).sort("_id", ASCENDING)
+            standalone_link_buffer: list[dict[str, Any]] = []
+
+            def flush_standalone() -> None:
+                nonlocal standalone_link_buffer, standalone_products, last_standalone_id
+                if not standalone_link_buffer:
+                    return
+                product_ids = [
+                    str(item["_id"]) for item in standalone_link_buffer
+                ]
+                products = {
+                    str(item["_id"]): item
+                    for item in self.db[measured_collection].find(
+                        {"_id": {"$in": product_ids}}
+                    )
+                }
+                if len(products) != len(product_ids):
+                    missing_products = sorted(set(product_ids) - set(products))
+                    raise RuntimeError(
+                        f"measured products are missing: {missing_products[:5]}"
+                    )
+                documents = []
+                for link in standalone_link_buffer:
+                    product = products[str(link["_id"])]
+                    metadata = (product.get("bibliographic_info") or {}).get(
+                        "minciencias"
+                    ) or {}
+                    if metadata.get("target_entity") != target_entity:
+                        raise RuntimeError(
+                            "product reached a materializer for another entity"
+                        )
+                    documents.append(
+                        standalone_official_entity(
+                            product,
+                            link,
+                            target_entity=target_entity,
+                            materialized_at=enriched_at,
+                        )
+                    )
+                    standalone_status_counts[
+                        str(link.get("status") or "")
+                    ] += 1
+                collisions = output.count_documents(
+                    {
+                        "_id": {"$in": product_ids},
+                        (
+                            "bibliographic_info.minciencias.identity_status"
+                            if target_entity == "works"
+                            else "source_metadata.minciencias.identity_status"
+                        ): {
+                            "$ne": "official_standalone"
+                        },
+                    }
+                )
+                if collisions:
+                    raise RuntimeError(
+                        "official standalone identifiers collide with graph identifiers"
+                    )
+                _bulk_replace(output, documents)
+                standalone_products += len(documents)
+                last_standalone_id = product_ids[-1]
+                self.runs.update_one(
+                    {"_id": run_name},
+                    {
+                        "$set": {
+                            "last_standalone_product_id": last_standalone_id,
+                            "standalone_products": standalone_products,
+                            "standalone_status_counts": dict(
+                                standalone_status_counts
+                            ),
+                            "last_checkpoint_at": int(time()),
+                        }
+                    },
+                )
+                standalone_link_buffer = []
+
+            try:
+                for link in standalone_cursor:
+                    standalone_link_buffer.append(link)
+                    if len(standalone_link_buffer) >= batch_size:
+                        flush_standalone()
+                    if (
+                        standalone_products + len(standalone_link_buffer)
+                    ) % progress_every < len(standalone_link_buffer):
+                        print(
+                            f"INFO: measurement graph run={run_name} "
+                            f"standalone={standalone_products + len(standalone_link_buffer)}.",
+                            flush=True,
+                        )
+                flush_standalone()
+            finally:
+                standalone_cursor.close()
+
             source_count = self.db[graph_collection].count_documents({})
             output_count = output.count_documents({})
             linked_products = self.db[links_collection].count_documents({"status": "linked"})
+            link_products = self.db[links_collection].count_documents({})
             critical_counts = {
-                "graph_coverage": abs(source_count - output_count),
+                "graph_and_standalone_coverage": abs(
+                    source_count + standalone_products - output_count
+                ),
                 "linked_product_coverage": abs(linked_products - attached_products),
+                "official_product_coverage": abs(
+                    link_products - attached_products - standalone_products
+                ),
             }
             critical = sum(critical_counts.values())
             if critical:
                 raise RuntimeError(
                     f"enriched graph audit failed: {critical_counts}"
                 )
-            output.create_index("year_published")
+            if target_entity == "works":
+                output.create_index("year_published")
+            elif target_entity == "projects":
+                output.create_index("year_init")
+                output.create_index("year_end")
+            elif target_entity == "events":
+                output.create_index("year_held")
             output.create_index("titles.title")
             output.create_index("authors.id")
             output.create_index("groups.id")
             output.create_index([("external_ids.source", ASCENDING), ("external_ids.id", ASCENDING)])
-            output.create_index("bibliographic_info.minciencias.product_ids")
-            publication = self.db[WORK_GRAPH_PUBLICATIONS]
-            previous = publication.find_one({"_id": "current"}) or {}
+            output.create_index(
+                "bibliographic_info.minciencias.product_ids"
+                if target_entity == "works"
+                else "source_metadata.minciencias.product_ids"
+            )
+            publication = self.db[
+                WORK_GRAPH_PUBLICATIONS
+                if target_entity == "works"
+                else SCIENTI_FINAL_ENTITY_PUBLICATIONS
+            ]
+            current_id = "current" if target_entity == "works" else f"current_{target_entity}"
+            previous = publication.find_one({"_id": current_id}) or {}
             self.runs.update_one(
                 {"_id": run_name},
                 {
@@ -1199,7 +1606,12 @@ class MincienciasMeasurementPipeline:
                 previous_collection=str(previous.get("current_collection") or ""),
                 enriched=enriched,
                 attached_products=attached_products,
+                standalone_products=standalone_products,
+                standalone_status_counts=dict(standalone_status_counts),
                 links_collection=links_collection,
+                measured_collection=measured_collection,
+                target_entity=target_entity,
+                publish_pointer=publish_pointer,
             )
         except Exception as error:
             self.runs.update_one(
@@ -1218,40 +1630,59 @@ class MincienciasMeasurementPipeline:
         previous_collection: str,
         enriched: int,
         attached_products: int,
+        standalone_products: int,
+        standalone_status_counts: dict[str, int],
         links_collection: str,
+        measured_collection: str,
+        target_entity: str,
+        publish_pointer: bool,
     ) -> dict[str, Any]:
         """Finish the small post-rename window safely after a process crash."""
         if target_collection not in self.db.list_collection_names():
             raise RuntimeError("cannot publish a missing enriched graph")
-        works = self.db[target_collection].count_documents({})
+        documents = self.db[target_collection].count_documents({})
         published_at = int(time())
-        publication = self.db[WORK_GRAPH_PUBLICATIONS]
+        publication = self.db[
+            WORK_GRAPH_PUBLICATIONS
+            if target_entity == "works"
+            else SCIENTI_FINAL_ENTITY_PUBLICATIONS
+        ]
         publication.replace_one(
             {"_id": run_name},
             {
                 "_id": run_name,
                 "status": "published",
-                "graph_version": f"{GRAPH_VERSION}-measurements-v1",
+                "graph_version": f"{GRAPH_VERSION}-measurements-v3",
                 "collection": target_collection,
                 "previous_collection": previous_collection,
-                "works": works,
+                "target_entity": target_entity,
+                "documents": documents,
+                "works": documents if target_entity == "works" else None,
                 "enriched_works": enriched,
-                "official_products": attached_products,
+                "enriched_entities": enriched,
+                "attached_official_products": attached_products,
+                "standalone_official_products": standalone_products,
+                "official_products": attached_products + standalone_products,
                 "published_at": published_at,
             },
             upsert=True,
         )
-        publication.replace_one(
-            {"_id": "current"},
-            {
-                "_id": "current",
-                "current_collection": target_collection,
-                "current_run_name": run_name,
-                "previous_collection": previous_collection,
-                "published_at": published_at,
-            },
-            upsert=True,
-        )
+        if publish_pointer:
+            current_id = (
+                "current" if target_entity == "works" else f"current_{target_entity}"
+            )
+            publication.replace_one(
+                {"_id": current_id},
+                {
+                    "_id": current_id,
+                    "target_entity": target_entity,
+                    "current_collection": target_collection,
+                    "current_run_name": run_name,
+                    "previous_collection": previous_collection,
+                    "published_at": published_at,
+                },
+                upsert=True,
+            )
         summary = {
             "run_name": run_name,
             "status": "complete",
@@ -1259,11 +1690,24 @@ class MincienciasMeasurementPipeline:
                 "config", {}
             ).get("graph_collection", ""),
             "collection": target_collection,
-            "works": works,
+            "target_entity": target_entity,
+            "pointer_published": publish_pointer,
+            "documents": documents,
+            "works": documents if target_entity == "works" else None,
             "enriched_works": enriched,
-            "official_products": attached_products,
-            "unlinked_official_products": self.db[links_collection].count_documents(
-                {"status": {"$ne": "linked"}}
+            "enriched_entities": enriched,
+            "attached_official_products": attached_products,
+            "standalone_official_products": standalone_products,
+            "standalone_status_counts": standalone_status_counts,
+            "official_products": attached_products + standalone_products,
+            "unlinked_official_products": standalone_products,
+            "excluded_missing_title_products": self.db[
+                measured_collection
+            ].count_documents(
+                {
+                    "bibliographic_info.minciencias.target_entity": target_entity,
+                    "titles.0.title": {"$exists": False},
+                }
             ),
             "critical_anomalies": 0,
         }

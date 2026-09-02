@@ -17,12 +17,13 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from yuku.scienti_search import read_json_array
+from yuku.scienti_bibliographic_audit import BIBLIOGRAPHIC_AUDITS
 from yuku.socrata_snapshot import SocrataSnapshotDownloader
 
 
 PIPELINE_RUNS = "scienti_pipeline_runs"
 PIPELINE_LOCKS = "scienti_pipeline_locks"
-PIPELINE_VERSION = "scienti-full-pipeline-v8"
+PIPELINE_VERSION = "scienti-full-pipeline-v13"
 
 
 STAGES = (
@@ -45,13 +46,23 @@ STAGES = (
     "works_semantic_audit",
     "patents_semantic_audit",
     "events_semantic_audit",
+    "entities_compare",
     "entities_publish",
     "projects_graph",
     "patents_graph",
+    "events_materialize",
     "base_graph",
     "measurements_normalize",
     "measurements_link",
     "final_graph",
+    "projects_measurements_link",
+    "projects_final",
+    "patents_measurements_link",
+    "patents_final",
+    "events_measurements_link",
+    "events_final",
+    "bibliographic_audit",
+    "final_release",
     "cleanup",
 )
 
@@ -173,12 +184,19 @@ def load_pipeline_config(path: str | Path) -> dict[str, Any]:
             "entity_projects": f"scienti_projects_normalized_{tag}",
             "entity_patents": f"scienti_patents_normalized_{tag}",
             "entity_events": f"scienti_events_normalized_{tag}",
-            "projects_graph": f"scienti_projects_final_{tag}",
-            "patents_graph": f"scienti_patents_final_{tag}",
+            "projects_graph": f"scienti_projects_graph_{tag}",
+            "patents_graph": f"scienti_patents_graph_{tag}",
+            "events_snapshot": f"scienti_events_snapshot_{tag}",
             "base_graph": f"cvlac_works_graph_base_{tag}",
             "measured_products": f"minciencias_measured_products_{tag}",
             "measurement_links": f"minciencias_measured_product_links_{tag}",
-            "final_graph": f"cvlac_works_graph_final_{tag}",
+            "projects_measurement_links": f"minciencias_measured_project_links_{tag}",
+            "patents_measurement_links": f"minciencias_measured_patent_links_{tag}",
+            "events_measurement_links": f"minciencias_measured_event_links_{tag}",
+            "final_graph": f"scienti_works_final_{tag}",
+            "projects_final": f"scienti_projects_final_{tag}",
+            "patents_final": f"scienti_patents_final_{tag}",
+            "events_final": f"scienti_events_final_{tag}",
         },
     }
     config = _merge(defaults, value)
@@ -633,6 +651,7 @@ class ScientiFullPipeline:
             recognized_groups_collection=self.names["recognized_groups"],
             batch_size=int(processing["graph_batch_size"]),
             candidate_partitions=int(processing["graph_partitions"]),
+            publish_pointer=False,
         )
 
     def _entity_graph(self, entity: str) -> dict[str, Any]:
@@ -648,6 +667,15 @@ class ScientiFullPipeline:
             max_candidate_group=int(
                 processing.get("entity_graph_max_candidate_group", 100)
             ),
+        )
+
+    def _events_materialize(self) -> dict[str, Any]:
+        return self.yuku.materialize_scienti_entity_snapshot(
+            entity="events",
+            run_name=f"{self.run_name}_events_materialize",
+            source_collection=self.names["entity_events"],
+            target_collection=self.names["events_snapshot"],
+            entity_run_name=f"{self.run_name}_entities",
         )
 
     def _entities_normalize(self) -> dict[str, Any]:
@@ -696,15 +724,60 @@ class ScientiFullPipeline:
 
     def _entities_publish(self) -> dict[str, Any]:
         """Publish one audited temporal snapshot after every semantic gate."""
+        target_run = f"{self.run_name}_entities"
+        current = self.db["scienti_entity_publications"].find_one(
+            {"_id": "current"}
+        ) or {}
+        current_run = str(current.get("current_run_name") or "")
+        comparison_name = (
+            self._entity_comparison_name()
+            if current_run and current_run != target_run
+            else ""
+        )
         return self.yuku.publish_scienti_entities(
-            run_name=f"{self.run_name}_entities",
-            comparison_name="",
+            run_name=target_run,
+            comparison_name=comparison_name,
             project_audit_name=f"{self.run_name}_projects_semantic_audit",
             works_audit_name=f"{self.run_name}_works_semantic_audit",
             patents_audit_name=f"{self.run_name}_patents_semantic_audit",
             events_audit_name=f"{self.run_name}_events_semantic_audit",
-            allow_snapshot_without_comparison=True,
+            allow_snapshot_without_comparison=not comparison_name,
         )
+
+    def _entity_comparison_name(self) -> str:
+        return f"{self.run_name}_entity_compare"
+
+    def _entities_compare(self) -> dict[str, Any]:
+        target_run = f"{self.run_name}_entities"
+        current = self.db["scienti_entity_publications"].find_one(
+            {"_id": "current"}
+        ) or {}
+        current_run = str(current.get("current_run_name") or "")
+        if not current_run:
+            return {
+                "status": "not_required_initial_snapshot",
+                "new_run_name": target_run,
+            }
+        if current_run == target_run:
+            return {
+                "status": "already_current",
+                "old_run_name": current_run,
+                "new_run_name": target_run,
+            }
+        processing = self.config["processing"]
+        result = self.yuku.compare_scienti_entity_versions(
+            comparison_name=self._entity_comparison_name(),
+            old_run_name=current_run,
+            new_run_name=target_run,
+            progress_every=int(processing["progress_every"]),
+            batch_size=int(processing["semantic_audit_batch_size"]),
+            example_limit=int(processing["semantic_audit_example_limit"]),
+        )
+        if result.get("status") != "passed" or int(
+            result.get("critical_findings", 0) or 0
+        ):
+            raise RuntimeError(f"entity version comparison did not pass: {result}")
+        return result
 
     def _measurements_normalize(self) -> dict[str, Any]:
         dataset = self.config["open_data"]["datasets"]["production"]
@@ -716,30 +789,229 @@ class ScientiFullPipeline:
             progress_every=int(self.config["processing"]["progress_every"]),
         )
 
-    def _measurements_link(self) -> dict[str, Any]:
+    def _measurements_link(self, target_entity: str = "works") -> dict[str, Any]:
+        graph_names = {
+            "works": "base_graph",
+            "projects": "projects_graph",
+            "patents": "patents_graph",
+            "events": "events_snapshot",
+        }
+        link_names = {
+            "works": "measurement_links",
+            "projects": "projects_measurement_links",
+            "patents": "patents_measurement_links",
+            "events": "events_measurement_links",
+        }
         return self.yuku.link_minciencias_measured_products(
-            run_name=f"{self.run_name}_measurements_link",
+            run_name=f"{self.run_name}_{target_entity}_measurements_link",
             measured_collection=self.names["measured_products"],
-            graph_collection=self.names["base_graph"],
-            links_collection=self.names["measurement_links"],
+            graph_collection=self.names[graph_names[target_entity]],
+            links_collection=self.names[link_names[target_entity]],
+            target_entity=target_entity,
             batch_size=int(self.config["processing"]["measurement_batch_size"]),
             progress_every=int(self.config["processing"]["progress_every"]),
         )
 
-    def _final_graph(self) -> dict[str, Any]:
+    def _final_measurement_entity(self, target_entity: str) -> dict[str, Any]:
+        graph_names = {
+            "works": "base_graph",
+            "projects": "projects_graph",
+            "patents": "patents_graph",
+            "events": "events_snapshot",
+        }
+        link_names = {
+            "works": "measurement_links",
+            "projects": "projects_measurement_links",
+            "patents": "patents_measurement_links",
+            "events": "events_measurement_links",
+        }
+        final_names = {
+            "works": "final_graph",
+            "projects": "projects_final",
+            "patents": "patents_final",
+            "events": "events_final",
+        }
         return self.yuku.materialize_minciencias_enriched_graph(
-            run_name=f"{self.run_name}_final_graph",
-            graph_collection=self.names["base_graph"],
+            run_name=f"{self.run_name}_{target_entity}_final",
+            graph_collection=self.names[graph_names[target_entity]],
             measured_collection=self.names["measured_products"],
-            links_collection=self.names["measurement_links"],
-            target_collection=self.names["final_graph"],
+            links_collection=self.names[link_names[target_entity]],
+            target_collection=self.names[final_names[target_entity]],
+            target_entity=target_entity,
             batch_size=int(self.config["processing"]["measurement_batch_size"]),
             progress_every=int(self.config["processing"]["progress_every"]),
+            publish_pointer=False,
         )
+
+    def _publish_legacy_final_pointers(self, release: dict[str, Any]) -> None:
+        """Expose legacy entity pointers only after the joint release passes."""
+        published_at = int(
+            release.get("published_at") or datetime.now(timezone.utc).timestamp()
+        )
+        final_names = {
+            "works": "final_graph",
+            "projects": "projects_final",
+            "patents": "patents_final",
+            "events": "events_final",
+        }
+        for entity, name_key in final_names.items():
+            publication_name = (
+                "scienti_work_graph_publications"
+                if entity == "works"
+                else "scienti_final_entity_publications"
+            )
+            current_id = "current" if entity == "works" else f"current_{entity}"
+            publications = self.db[publication_name]
+            current = publications.find_one({"_id": current_id}) or {}
+            target = self.names[name_key]
+            previous = str(current.get("current_collection") or "")
+            if previous == target:
+                previous = str(current.get("previous_collection") or "")
+            publications.replace_one(
+                {"_id": current_id},
+                {
+                    "_id": current_id,
+                    "target_entity": entity,
+                    "current_collection": target,
+                    "current_run_name": f"{self.run_name}_{entity}_final",
+                    "previous_collection": previous,
+                    "published_at": published_at,
+                },
+                upsert=True,
+            )
+
+    def _final_graph(self) -> dict[str, Any]:
+        return self._final_measurement_entity("works")
+
+    def _bibliographic_audit(self) -> dict[str, Any]:
+        audit_name = f"{self.run_name}_bibliographic_audit"
+        result = self.yuku.audit_scienti_bibliographic_enrichment(
+            audit_name=audit_name,
+            run_name=self.run_name,
+            base_collection=self.names["base_graph"],
+            final_collection=self.names["final_graph"],
+            materialization_run_name=f"{self.run_name}_works_final",
+        )
+        if result.get("status") != "passed" or int(
+            result.get("critical_anomalies") or 0
+        ):
+            raise RuntimeError(f"critical bibliographic audit anomalies: {result}")
+        return result
+
+    def _final_release(self) -> dict[str, Any]:
+        tag = self.config["snapshot_tag"]
+        audit = self.db[BIBLIOGRAPHIC_AUDITS].find_one(
+            {"_id": f"{self.run_name}_bibliographic_audit"}
+        ) or {}
+        if audit.get("status") != "passed" or int(
+            audit.get("critical_anomalies") or 0
+        ):
+            raise RuntimeError("bibliographic enrichment audit has not passed")
+        release = self.yuku.publish_scienti_final_release(
+            release_name=f"release_{tag}",
+            audit_name=f"release_{tag}_audit",
+            collections={
+                "works": self.names["final_graph"],
+                "projects": self.names["projects_final"],
+                "patents": self.names["patents_final"],
+                "events": self.names["events_final"],
+            },
+            materialization_runs={
+                entity: f"{self.run_name}_{entity}_final"
+                for entity in ("works", "projects", "patents", "events")
+            },
+        )
+        self._publish_legacy_final_pointers(release)
+        return release
 
     def _cleanup(self) -> dict[str, Any]:
         if not self.config["processing"].get("cleanup_transient", True):
             return {"status": "skipped_by_configuration", "removed": []}
+        derived = [
+            self.names[key]
+            for key in (
+                "cvlac_normalized",
+                "gruplac_normalized",
+                "projects_graph",
+                "patents_graph",
+                "events_snapshot",
+                "base_graph",
+                "measured_products",
+                "measurement_links",
+                "projects_measurement_links",
+                "patents_measurement_links",
+                "events_measurement_links",
+            )
+        ]
+        release_name = f"release_{self.config['snapshot_tag']}"
+        publications = self.db["scienti_final_release_publications"]
+        current = publications.find_one({"_id": "current"}) or {}
+        if current.get("current_release") == release_name:
+            previous_name = str(current.get("previous_release") or "")
+            previous = publications.find_one({"_id": previous_name}) or {}
+            current_finals = {
+                self.names[key]
+                for key in (
+                    "final_graph",
+                    "projects_final",
+                    "patents_final",
+                    "events_final",
+                )
+            }
+            derived.extend(
+                name
+                for name in (previous.get("collections") or {}).values()
+                if name and name not in current_finals
+            )
+        protected = [
+            self.names[key]
+            for key in (
+                "all_researchers",
+                "directory_pages",
+                "recognized_researchers",
+                "recognized_groups",
+                "cvlac_seed_raw",
+                "cvlac_raw",
+                "gruplac_raw",
+                "gruplac_downloads",
+                "final_graph",
+                "projects_final",
+                "patents_final",
+                "events_final",
+            )
+        ]
+        entity_publications = self.db["scienti_entity_publications"]
+        current_entities = entity_publications.find_one({"_id": "current"}) or {}
+        current_entity_destinations = {
+            str(name)
+            for name in (current_entities.get("destinations") or {}).values()
+            if str(name)
+        }
+        protected.extend(sorted(current_entity_destinations))
+        previous_entity_run = str(current_entities.get("previous_run_name") or "")
+        previous_entities = (
+            entity_publications.find_one(
+                {"_id": previous_entity_run, "record_type": "release"}
+            )
+            if previous_entity_run
+            else {}
+        ) or {}
+        derived.extend(
+            name
+            for name in (previous_entities.get("destinations") or {}).values()
+            if name and name not in current_entity_destinations
+        )
+        for dataset in self.config["open_data"]["datasets"].values():
+            protected.extend(
+                (dataset["data_collection"], dataset["metadata_collection"])
+            )
+        release_cleanup = self.yuku.cleanup_scienti_final_release(
+            cleanup_name=f"cleanup_{self.config['snapshot_tag']}",
+            release_name=release_name,
+            candidates=derived,
+            protected=protected,
+            reset_entity_publication=False,
+        )
         candidates = []
         verify_run = f"{self.run_name}_gruplac_verify"
         if self.config["processing"].get("verify_incomplete_gruplac", True):
@@ -765,7 +1037,12 @@ class ScientiFullPipeline:
                 removed.append(name)
             else:
                 retained_nonempty.append({"collection": name, "count": count})
-        return {"removed": removed, "retained_nonempty": retained_nonempty}
+        return {
+            "status": "complete",
+            "release_cleanup": release_cleanup,
+            "removed": removed,
+            "retained_nonempty": retained_nonempty,
+        }
 
     def run(
         self,
@@ -813,13 +1090,23 @@ class ScientiFullPipeline:
             "works_semantic_audit": lambda: self._auxiliary_semantic_audit("works"),
             "patents_semantic_audit": lambda: self._auxiliary_semantic_audit("patents"),
             "events_semantic_audit": lambda: self._auxiliary_semantic_audit("events"),
+            "entities_compare": self._entities_compare,
             "entities_publish": self._entities_publish,
             "projects_graph": lambda: self._entity_graph("projects"),
             "patents_graph": lambda: self._entity_graph("patents"),
+            "events_materialize": self._events_materialize,
             "base_graph": self._base_graph,
             "measurements_normalize": self._measurements_normalize,
             "measurements_link": self._measurements_link,
             "final_graph": self._final_graph,
+            "projects_measurements_link": lambda: self._measurements_link("projects"),
+            "projects_final": lambda: self._final_measurement_entity("projects"),
+            "patents_measurements_link": lambda: self._measurements_link("patents"),
+            "patents_final": lambda: self._final_measurement_entity("patents"),
+            "events_measurements_link": lambda: self._measurements_link("events"),
+            "events_final": lambda: self._final_measurement_entity("events"),
+            "bibliographic_audit": self._bibliographic_audit,
+            "final_release": self._final_release,
             "cleanup": self._cleanup,
         }
         self._acquire_lock()

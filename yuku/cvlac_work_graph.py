@@ -566,6 +566,143 @@ def uniq_strings(values: Iterable[Any]) -> list[str]:
     return [found[key] for key in sorted(found)]
 
 
+BIBLIOGRAPHIC_FIELDS = (
+    "publisher",
+    "book_title",
+    "edition",
+    "volume",
+    "pages",
+    "start_page",
+    "end_page",
+    "publication_place",
+    "language",
+    "dissemination_medium",
+)
+
+
+def bibliographic_field_evidence(
+    nodes: list[dict[str, Any]], field: str
+) -> dict[str, Any]:
+    """Consolidate exact-normalized values while retaining every occurrence."""
+    candidates: dict[str, dict[str, Any]] = {}
+    for node in nodes:
+        value = str(node.get(field) or "").strip()
+        key = norm_text(value)
+        if not key:
+            continue
+        candidate = candidates.setdefault(
+            key,
+            {"value": value, "occurrences": []},
+        )
+        # Prefer the richest spelling only inside the same exact-normalized
+        # value (for example, the accented form). This is not fuzzy matching.
+        current = str(candidate["value"])
+        value_rank = (sum(ord(char) > 127 for char in value), len(value), value)
+        current_rank = (
+            sum(ord(char) > 127 for char in current),
+            len(current),
+            current,
+        )
+        if value_rank > current_rank:
+            candidate["value"] = value
+        occurrence = {
+            "source_kind": str(node.get("source_kind") or ""),
+            "source_id": str(node.get("source_id") or ""),
+            "record_index": node.get("source_record_index"),
+        }
+        if occurrence not in candidate["occurrences"]:
+            candidate["occurrences"].append(occurrence)
+    ordered = [candidates[key] for key in sorted(candidates)]
+    if not ordered:
+        return {"status": "missing", "value": "", "candidates": []}
+    status = "consistent" if len(ordered) == 1 else "conflict"
+    return {
+        "status": status,
+        "value": ordered[0]["value"] if status == "consistent" else "",
+        "candidates": ordered,
+    }
+
+
+def materialize_bibliographic_context(
+    entry: dict[str, Any],
+    nodes: list[dict[str, Any]],
+    timestamp: int,
+    isbns: list[str],
+) -> None:
+    if not any(
+        str(node.get("type_family") or "") in {"book", "book_chapter", "editorial"}
+        for node in nodes
+    ):
+        return
+    evidence = {
+        field: bibliographic_field_evidence(nodes, field)
+        for field in BIBLIOGRAPHIC_FIELDS
+    }
+    evidence = {
+        field: value
+        for field, value in evidence.items()
+        if value["status"] != "missing"
+    }
+    if not evidence:
+        return
+
+    bibliographic_info: dict[str, Any] = {}
+    for field in (
+        "book_title",
+        "edition",
+        "volume",
+        "pages",
+        "start_page",
+        "end_page",
+        "publication_place",
+        "language",
+        "dissemination_medium",
+    ):
+        value = (evidence.get(field) or {}).get("value")
+        if value:
+            bibliographic_info[field] = value
+    publisher = (evidence.get("publisher") or {}).get("value", "")
+    if publisher:
+        bibliographic_info["publisher"] = {
+            "name": publisher,
+            "country_code": "",
+        }
+    bibliographic_info["scienti"] = {
+        "extraction_rule": "explicit_bibliographic_labels_only",
+        "fields": evidence,
+    }
+    entry["bibliographic_info"] = bibliographic_info
+
+    book_title = (evidence.get("book_title") or {}).get("value", "")
+    source_name = book_title or publisher
+    if not source_name:
+        return
+    source_type = "book" if book_title else "publisher"
+    entry["source"] = {
+        "name": source_name,
+        "updated": [{"source": "minciencias", "time": timestamp}],
+        "names": [
+            {
+                "lang": "",
+                "name": source_name,
+                "source": "minciencias",
+            }
+        ],
+        "types": [{"source": "minciencias", "type": source_type}],
+        "publisher": (
+            {"name": publisher, "country_code": ""} if publisher else {}
+        ),
+        "external_ids": (
+            [{"source": "isbn", "id": value} for value in isbns]
+            if book_title
+            else []
+        ),
+        "external_urls": [],
+        "apc": {},
+        "ranking": [],
+    }
+
+
 def choose_year(nodes: list[dict[str, Any]]) -> int | None:
     counts = Counter(node.get("year") for node in nodes if node.get("year") is not None)
     if not counts:
@@ -1068,8 +1205,10 @@ def materialize_work(
         group_name = str(node.get("group_name") or "").strip()
         if len(group_name) > len(group["name"]):
             group["name"] = group_name
-    if groups:
-        entry["groups"] = [groups[key] for key in sorted(groups)]
+    # Kahi requires a stable array even when no direct product-group evidence
+    # exists.  An empty array is explicit uncertainty; it must not trigger an
+    # affiliation inference from the researcher's career history.
+    entry["groups"] = [groups[key] for key in sorted(groups)]
 
     for author in entry["authors"]:
         profile_id = str(author.get("id") or "")
@@ -1145,6 +1284,10 @@ def materialize_work(
         }
         for value in title_fingerprints
     ]
+
+    # Bibliographic publication context is enrichment-only. It is deliberately
+    # materialized after identity selection and therefore cannot merge works.
+    materialize_bibliographic_context(entry, nodes, timestamp, isbns)
 
     areas = uniq_strings(value for node in nodes for value in node.get("areas", []))
     entry["subjects"] = []
@@ -1570,7 +1713,17 @@ class CvlacWorkGraphBuilder:
                     "affiliation": "",
                     "country": record.get("country", ""),
                     "publisher": record.get("publisher", ""),
+                    "book_title": record.get("book_title", ""),
+                    "edition": record.get("edition", ""),
                     "pages": record.get("pages", ""),
+                    "start_page": record.get("start_page", ""),
+                    "end_page": record.get("end_page", ""),
+                    "volume": record.get("volume", ""),
+                    "publication_place": record.get("publication_place", ""),
+                    "language": record.get("language", ""),
+                    "dissemination_medium": record.get(
+                        "dissemination_medium", ""
+                    ),
                     "validated": bool(record.get("validated")),
                     "routing_rule": route["rule"],
                     "type_catalog_version": route.get("catalog_version", ""),
@@ -1651,6 +1804,7 @@ class CvlacWorkGraphBuilder:
                     "profile_author": profile_author,
                     "source_kind": "cvlac",
                     "source_id": profile_id,
+                    "source_record_index": production_index,
                     "title": title,
                     "title_key": title_key,
                     "year": record.get("year"),
@@ -1675,6 +1829,18 @@ class CvlacWorkGraphBuilder:
                     ),
                     "affiliation": record.get("affiliation", ""),
                     "country": record.get("country", ""),
+                    "publisher": record.get("publisher", ""),
+                    "book_title": record.get("book_title", ""),
+                    "edition": record.get("edition", ""),
+                    "pages": record.get("pages", ""),
+                    "start_page": record.get("start_page", ""),
+                    "end_page": record.get("end_page", ""),
+                    "volume": record.get("volume", ""),
+                    "publication_place": record.get("publication_place", ""),
+                    "language": record.get("language", ""),
+                    "dissemination_medium": record.get(
+                        "dissemination_medium", ""
+                    ),
                     "routing_rule": route["rule"],
                     "type_catalog_version": route.get("catalog_version", ""),
                 }
@@ -1793,6 +1959,18 @@ class CvlacWorkGraphBuilder:
                     ),
                     "affiliation": record.get("affiliation", ""),
                     "country": record.get("country", ""),
+                    "publisher": record.get("publisher", ""),
+                    "book_title": record.get("book_title", ""),
+                    "edition": record.get("edition", ""),
+                    "pages": record.get("pages", ""),
+                    "start_page": record.get("start_page", ""),
+                    "end_page": record.get("end_page", ""),
+                    "volume": record.get("volume", ""),
+                    "publication_place": record.get("publication_place", ""),
+                    "language": record.get("language", ""),
+                    "dissemination_medium": record.get(
+                        "dissemination_medium", ""
+                    ),
                     "routing_rule": route["rule"],
                     "type_catalog_version": route.get("catalog_version", ""),
                 }
@@ -2282,7 +2460,13 @@ class CvlacWorkGraphBuilder:
 class CheckpointedNormalizedWorkGraphBuilder(CvlacWorkGraphBuilder):
     """Build a versioned graph from audited normalized sources with resume."""
 
-    def __init__(self, *args, gate: dict[str, Any], **kwargs):
+    def __init__(
+        self,
+        *args,
+        gate: dict[str, Any],
+        publish_pointer: bool = True,
+        **kwargs,
+    ):
         kwargs["source_mode"] = "normalized"
         kwargs.setdefault(
             "recognized_groups_collection",
@@ -2291,6 +2475,7 @@ class CheckpointedNormalizedWorkGraphBuilder(CvlacWorkGraphBuilder):
         super().__init__(*args, **kwargs)
         self.use_compact_graph = True
         self.gate = dict(gate)
+        self.publish_pointer = bool(publish_pointer)
         self.runs = self.db[f"{self.collection_name}_graph_runs"]
         self.nodes_name = ""
         self.edges_name = ""
@@ -2321,6 +2506,7 @@ class CheckpointedNormalizedWorkGraphBuilder(CvlacWorkGraphBuilder):
             "batch_size": self.batch_size,
             "max_title_group_size": self.max_title_group_size,
             "candidate_partitions": self.candidate_partitions,
+            "publish_pointer": self.publish_pointer,
             "union_find": "numpy-int32-v1",
             "gate": stable_gate,
         }
@@ -2837,20 +3023,22 @@ class CheckpointedNormalizedWorkGraphBuilder(CvlacWorkGraphBuilder):
             },
             upsert=True,
         )
-        publications.replace_one(
-            {"_id": "current"},
-            {
-                "_id": "current",
-                "current_collection": self.collection_name,
-                "current_run_name": self.run_id,
-                "previous_collection": previous,
-                "published_at": published_at,
-            },
-            upsert=True,
-        )
+        if self.publish_pointer:
+            publications.replace_one(
+                {"_id": "current"},
+                {
+                    "_id": "current",
+                    "current_collection": self.collection_name,
+                    "current_run_name": self.run_id,
+                    "previous_collection": previous,
+                    "published_at": published_at,
+                },
+                upsert=True,
+            )
         return {
             "collection": self.collection_name,
             "previous_collection": previous,
+            "pointer_published": self.publish_pointer,
             "works": expected_works,
             "published_at": published_at,
         }
@@ -3103,6 +3291,11 @@ class CheckpointedNormalizedWorkGraphBuilder(CvlacWorkGraphBuilder):
                 "previous_collection": (
                     ((stages.get("publish") or {}).get("result") or {}).get(
                         "previous_collection", ""
+                    )
+                ),
+                "pointer_published": bool(
+                    ((stages.get("publish") or {}).get("result") or {}).get(
+                        "pointer_published"
                     )
                 ),
                 "profiles": int(audit.get("source_profiles") or 0),

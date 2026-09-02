@@ -5,10 +5,14 @@ import mongomock
 from yuku.cvlac_work_graph import WORK_GRAPH_PUBLICATIONS
 from yuku.minciencias_measurements import (
     MincienciasMeasurementPipeline,
+    SCIENTI_FINAL_ENTITY_PUBLICATIONS,
+    complete_kahi_entity_shape,
+    complete_kahi_work_shape,
     enrich_graph_work,
     graph_link_index_document,
     normalize_measured_product,
     resolve_measured_product_link,
+    standalone_official_work,
 )
 
 
@@ -163,6 +167,33 @@ class MeasuredProductLinkTest(unittest.TestCase):
             )
         )
 
+    def test_standalone_official_work_preserves_source_and_empty_matrices(self):
+        link = resolve_measured_product_link(
+            self.product, [], graph_collection="graph_v2"
+        )
+        standalone = standalone_official_work(
+            self.product, link, materialized_at=20
+        )
+
+        self.assertEqual(standalone["_id"], self.product["_id"])
+        self.assertEqual(standalone["authors"], [])
+        self.assertEqual(standalone["author_count"], 0)
+        self.assertEqual(
+            standalone["bibliographic_info"]["minciencias"]["identity_status"],
+            "official_standalone",
+        )
+        for field in (
+            "titles", "authors", "groups", "types", "external_ids",
+            "external_urls", "ranking", "subjects", "references",
+        ):
+            self.assertIsInstance(standalone[field], list)
+
+    def test_complete_shape_uses_empty_groups_without_inference(self):
+        work = graph_work()
+        del work["groups"]
+        completed = complete_kahi_work_shape(work)
+        self.assertEqual(completed["groups"], [])
+
 
 class MeasurementPipelineIntegrationTest(unittest.TestCase):
     def setUp(self):
@@ -185,6 +216,14 @@ class MeasurementPipelineIntegrationTest(unittest.TestCase):
                         group="COL0999999",
                     ),
                     "id_producto_pd": "ART-0000999999-1",
+                },
+                {
+                    **source_row(
+                        title="A project that must never enter works",
+                        typology="Proyecto de Investigacion y Desarrollo",
+                    ),
+                    "id_producto_pd": "PID-0000164771-9",
+                    "nme_clase_pd": "Formación de recurso humano",
                 },
             ]
         )
@@ -222,7 +261,7 @@ class MeasurementPipelineIntegrationTest(unittest.TestCase):
             batch_size=1,
             progress_every=100,
         )
-        self.assertEqual(normalized["products"], 2)
+        self.assertEqual(normalized["products"], 3)
 
         linked = self.pipeline.link(
             run_name="measure_link",
@@ -234,6 +273,9 @@ class MeasurementPipelineIntegrationTest(unittest.TestCase):
         )
         self.assertEqual(linked["status_counts"]["linked"], 1)
         self.assertEqual(linked["status_counts"]["unlinked"], 1)
+        self.assertEqual(linked["products"], 2)
+        self.assertEqual(linked["excluded_other_entities"], 1)
+        self.assertIsNone(self.db.measured_links.find_one({"_id": "PID-0000164771-9"}))
 
         materialized = self.pipeline.materialize(
             run_name="measure_graph",
@@ -244,18 +286,145 @@ class MeasurementPipelineIntegrationTest(unittest.TestCase):
             batch_size=1,
             progress_every=100,
         )
-        self.assertEqual(materialized["works"], 2)
+        self.assertEqual(materialized["works"], 3)
         self.assertEqual(materialized["enriched_works"], 1)
-        self.assertEqual(materialized["official_products"], 1)
+        self.assertEqual(materialized["attached_official_products"], 1)
+        self.assertEqual(materialized["standalone_official_products"], 1)
+        self.assertEqual(materialized["official_products"], 2)
         self.assertEqual(materialized["unlinked_official_products"], 1)
-        self.assertEqual(self.db.graph_v3.count_documents({}), 2)
+        self.assertEqual(self.db.graph_v3.count_documents({}), 3)
         self.assertIsNotNone(self.db.graph_v3.find_one({"_id": "scraped-only"}))
+        standalone = self.db.graph_v3.find_one({"_id": "ART-0000999999-1"})
+        self.assertIsNotNone(standalone)
+        self.assertEqual(
+            standalone["bibliographic_info"]["minciencias"]["identity_status"],
+            "official_standalone",
+        )
+        self.assertIsNone(self.db.graph_v3.find_one({"_id": "PID-0000164771-9"}))
         self.assertIsNotNone(
             self.db.measured_products.find_one({"_id": "ART-0000999999-1"})
         )
         current = self.db[WORK_GRAPH_PUBLICATIONS].find_one({"_id": "current"})
         self.assertEqual(current["current_collection"], "graph_v3")
         self.assertEqual(current["previous_collection"], "graph_v2")
+
+        deferred = self.pipeline.materialize(
+            run_name="measure_graph_deferred",
+            graph_collection="graph_v2",
+            measured_collection="measured_products",
+            links_collection="measured_links",
+            target_collection="graph_v4",
+            batch_size=1,
+            progress_every=100,
+            publish_pointer=False,
+        )
+        self.assertFalse(deferred["pointer_published"])
+        self.assertEqual(self.db.graph_v4.count_documents({}), 3)
+        current = self.db[WORK_GRAPH_PUBLICATIONS].find_one({"_id": "current"})
+        self.assertEqual(current["current_collection"], "graph_v3")
+
+    def test_nonwork_entities_link_and_materialize_without_inferred_dates(self):
+        shapes = {
+            "projects": {"year_init": 2012, "year_end": 2014},
+            "patents": {
+                "source_metadata": {
+                    "entity_graph": {"evidence": {"years": [2012]}}
+                }
+            },
+            "events": {"year_held": 2012},
+        }
+        for entity, temporal in shapes.items():
+            with self.subTest(entity=entity):
+                db = mongomock.MongoClient().dam
+                pipeline = MincienciasMeasurementPipeline(db)
+                product = normalize_measured_product(
+                    [source_row()], normalized_at=10
+                )
+                product["_id"] = f"{entity}-official-linked"
+                product["bibliographic_info"]["minciencias"][
+                    "target_entity"
+                ] = entity
+                product["bibliographic_info"]["minciencias"][
+                    "eligible_for_works"
+                ] = False
+                standalone = normalize_measured_product(
+                    [source_row(title=f"Official standalone {entity}")],
+                    normalized_at=10,
+                )
+                standalone["_id"] = f"{entity}-official-standalone"
+                standalone["bibliographic_info"]["minciencias"][
+                    "target_entity"
+                ] = entity
+                standalone["bibliographic_info"]["minciencias"][
+                    "eligible_for_works"
+                ] = False
+                db.measured.insert_many([product, standalone])
+
+                graph = complete_kahi_entity_shape(
+                    {
+                        "_id": f"{entity}-graph",
+                        "titles": [
+                            {"title": TITLE, "lang": "en", "source": "scienti"}
+                        ],
+                        "authors": [
+                            {"id": "0000164771", "full_name": "Author One"}
+                        ],
+                        "groups": [
+                            {"id": "COL0000828", "name": "Biotecnología Vegetal"}
+                        ],
+                    }
+                    | temporal,
+                    entity,
+                )
+                db.graph.insert_one(graph)
+
+                linked = pipeline.link(
+                    run_name=f"link_{entity}",
+                    measured_collection="measured",
+                    graph_collection="graph",
+                    links_collection="links",
+                    target_entity=entity,
+                    batch_size=1,
+                    progress_every=100,
+                )
+                self.assertEqual(linked["status_counts"]["linked"], 1)
+                self.assertEqual(linked["status_counts"]["unlinked"], 1)
+
+                result = pipeline.materialize(
+                    run_name=f"materialize_{entity}",
+                    graph_collection="graph",
+                    measured_collection="measured",
+                    links_collection="links",
+                    target_collection="final",
+                    target_entity=entity,
+                    batch_size=1,
+                    progress_every=100,
+                )
+                self.assertEqual(result["documents"], 2)
+                self.assertEqual(result["attached_official_products"], 1)
+                self.assertEqual(result["standalone_official_products"], 1)
+                linked_entity = db.final.find_one({"_id": f"{entity}-graph"})
+                self.assertEqual(linked_entity["author_count"], 1)
+                self.assertEqual(
+                    linked_entity["source_metadata"]["minciencias"]["product_ids"],
+                    [f"{entity}-official-linked"],
+                )
+                official_only = db.final.find_one(
+                    {"_id": f"{entity}-official-standalone"}
+                )
+                self.assertEqual(official_only["authors"], [])
+                self.assertEqual(official_only["author_count"], 0)
+                self.assertTrue(official_only["source_metadata"]["official_only"])
+                for field in ("date_init", "date_end", "year_init", "year_end"):
+                    if entity == "projects":
+                        self.assertIsNone(official_only[field])
+                if entity == "events":
+                    self.assertIsNone(official_only["date_held"])
+                    self.assertIsNone(official_only["year_held"])
+                current = db[SCIENTI_FINAL_ENTITY_PUBLICATIONS].find_one(
+                    {"_id": f"current_{entity}"}
+                )
+                self.assertEqual(current["current_collection"], "final")
 
 
 if __name__ == "__main__":

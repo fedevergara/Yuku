@@ -10,6 +10,10 @@ from yuku.cvlac_related_works import (
     ISBN_RE,
     ISSN_RE,
     YEAR_RE,
+    clean_bibliographic_value,
+    clean_language_value,
+    clean_pages_value,
+    clean_publisher_value,
     clean_text,
     normalize_doi,
     normalize_isbn,
@@ -26,11 +30,31 @@ SCIENTI_GRUPLAC_URL = (
 COD_RH_RE = re.compile(r"[?&]cod_rh=(\d+)(?:&|$)", re.IGNORECASE)
 NUMBERED_PRODUCT_RE = re.compile(r"^\s*\d+\s*\.\-\s*")
 PAGES_RE = re.compile(
-    r"p[aá]gs?\s*:\s*([^,;\n]+)",
+    r"\bp(?:(?:[aá]gs?)|(?:[aá]ginas))\.?\s*:\s*(.*?)"
+    r"(?=\bAutores\s*:|\s*,\s*(?:Ed\.|Editorial|Idiomas?|Vol\.)|[,;\n]|$)",
     re.IGNORECASE,
 )
-VOLUME_RE = re.compile(r"\bvol\s*:\s*([^,;\n]+)", re.IGNORECASE)
-PUBLISHER_RE = re.compile(r"\bEd\.\s*(.+?)(?:\s+Autores\s*:|$)", re.IGNORECASE)
+VOLUME_RE = re.compile(
+    r"\b(?:volumen|vol\.?)(?=\s|:|$)\s*:?\s*(.*?)"
+    r"(?=\s*,?\s*(?:fasc(?:[ií]culo)?\.?|p(?:[aá]gs?|[aá]ginas)\.?|Ed\.|"
+    r"Editorial|ISBN|ISSN|DOI|Autores?)\s*:|[,;\n]|$)",
+    re.IGNORECASE,
+)
+PUBLISHER_RE = re.compile(
+    r"(?:\bEditorial\s*:|\bEd\.\s*)(.*?)"
+    r"(?=\bAutores\s*:|\s*,\s*(?:Idiomas?|P[aá]ginas|Vol\.|ISBN|ISSN|DOI)\s*:|$)",
+    re.IGNORECASE,
+)
+EDITION_RE = re.compile(
+    r"\b(?:N[uú]mero de edici[oó]n|Edici[oó]n)\s*:\s*(.*?)"
+    r"(?=\s+Autores\s*:|\s*,?\s*(?:Idiomas?|P[aá]ginas|Vol\.|ISBN|ISSN|DOI|"
+    r"Editorial|Serie|Autor del documento original)\s*:|$)",
+    re.IGNORECASE,
+)
+LANGUAGE_RE = re.compile(
+    r"\bIdiomas?\s*:\s*(.*?)(?=\s+Autores\s*:|\s*,\s*(?:P[aá]ginas|Vol\.|ISBN|ISSN|DOI|Editorial)\s*:|$)",
+    re.IGNORECASE,
+)
 TIMELINE_PRODUCT_SECTIONS = {
     "Estrategias Pedagógicas para el fomento a la CTI",
     "Estrategias de Comunicación del Conocimiento",
@@ -279,6 +303,28 @@ def metadata_after_title(cell) -> str:
     return clean_text(BeautifulSoup(parts[1], "lxml").get_text(" ", strip=True))
 
 
+def extract_gruplac_book_title(metadata: str, product_type: str, section: str) -> str:
+    """Extract a chapter's containing book from the fixed country/year layout."""
+    if classify_gruplac_product(product_type, section) != "Capitulo de libro":
+        return ""
+    match = re.search(
+        r"^[^,]+,\s*(?:19|20)\d{2}\s*,\s*(.*?)"
+        r"(?=\s*,\s*(?:ISBN|ISSN|DOI|Vol\.?|p[aá]gs?\.?|Ed\.|Editorial)\s*:?)",
+        metadata or "",
+        flags=re.IGNORECASE,
+    )
+    return strip_value(match.group(1)) if match else ""
+
+
+def split_page_range(value: str) -> tuple[str, str]:
+    match = re.fullmatch(r"\s*([0-9]+)(?:\s*-\s*([0-9]+))?\s*", value or "")
+    if not match:
+        return "", ""
+    start = "" if match.group(1) == "0" else match.group(1)
+    end = "" if (match.group(2) or "") == "0" else (match.group(2) or "")
+    return start, end
+
+
 def parse_timeline_product_row(cell, text: str, section: str) -> dict[str, Any] | None:
     """Parse timeline rows even when malformed HTML swallows text into ``strong``."""
     visible = NUMBERED_PRODUCT_RE.sub("", text, count=1)
@@ -322,8 +368,15 @@ def parse_timeline_product_row(cell, text: str, section: str) -> dict[str, Any] 
             [normalize_isbn(value) for value in ISBN_RE.findall(text)]
         ),
         "publisher": "",
+        "book_title": "",
+        "edition": "",
         "pages": "",
+        "start_page": "",
+        "end_page": "",
         "volume": "",
+        "publication_place": "",
+        "dissemination_medium": "",
+        "language": "",
         "source_section": section,
         "validated": validation_marker.endswith("chulo_1.jpg"),
         "raw_text": text,
@@ -362,15 +415,30 @@ def parse_product_row(row, section: str) -> dict[str, Any] | None:
     publisher_match = PUBLISHER_RE.search(metadata)
     pages_match = PAGES_RE.search(metadata)
     volume_match = VOLUME_RE.search(metadata)
+    edition_match = EDITION_RE.search(metadata)
+    language_match = LANGUAGE_RE.search(metadata)
     img = cells[0].find("img", src=True)
     validation_marker = str(img.get("src", "")) if img else ""
 
     isbn = uniq_keep_order(
         [normalize_isbn(value) for value in ISBN_RE.findall(metadata)]
     )
+    type_impactu = classify_gruplac_product(product_type, section)
+    book_related = (
+        type_impactu in {"Libro", "Capitulo de libro"}
+        or "editorial" in clean_text(f"{product_type} {section}").lower()
+    )
+    pages = clean_pages_value(pages_match.group(1)) if pages_match else ""
+    start_page, end_page = split_page_range(pages)
+    publication_place = "" if YEAR_RE.fullmatch(country) else country
+    publisher = (
+        clean_publisher_value(publisher_match.group(1))
+        if book_related and publisher_match
+        else ""
+    )
     record: dict[str, Any] = {
         "product_type": product_type or section,
-        "type_impactu": classify_gruplac_product(product_type, section),
+        "type_impactu": type_impactu,
         "title": title,
         "year": plausible_years[0] if plausible_years else None,
         "country": country,
@@ -380,9 +448,16 @@ def parse_product_row(row, section: str) -> dict[str, Any] | None:
         ),
         "issn": uniq_keep_order([value.upper() for value in ISSN_RE.findall(metadata)]),
         "isbn": isbn,
-        "publisher": strip_value(publisher_match.group(1)) if publisher_match else "",
-        "pages": strip_value(pages_match.group(1)) if pages_match else "",
-        "volume": strip_value(volume_match.group(1)) if volume_match else "",
+        "publisher": publisher,
+        "book_title": extract_gruplac_book_title(metadata, product_type, section),
+        "edition": clean_bibliographic_value(edition_match.group(1)) if edition_match else "",
+        "pages": pages,
+        "start_page": start_page,
+        "end_page": end_page,
+        "volume": clean_bibliographic_value(volume_match.group(1)) if volume_match else "",
+        "publication_place": publication_place,
+        "dissemination_medium": "",
+        "language": clean_language_value(language_match.group(1)) if language_match else "",
         "source_section": section,
         "validated": validation_marker.endswith("chulo_1.jpg"),
         "raw_text": text,

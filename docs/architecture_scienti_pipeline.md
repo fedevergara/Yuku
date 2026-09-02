@@ -138,7 +138,15 @@ Cada adaptador debe producir, como mínimo:
   "isbn": [],
   "issn": [],
   "publisher": "",
+  "book_title": "",
+  "edition": "",
+  "volume": "",
   "pages": "",
+  "start_page": "",
+  "end_page": "",
+  "publication_place": "",
+  "language": "",
+  "dissemination_medium": "",
   "validated": true
 }
 ```
@@ -380,6 +388,9 @@ gruplac_production_data -> productos medidos -> enlaces seguros
                  |
                  v
              grafo final enriquecido
+                 |
+                 v
+ auditoría bibliográfica -> publicación conjunta -> limpieza exacta
 ```
 
 GrupLAC precede al manifiesto CVLAC para no perder perfiles privados o poco
@@ -427,38 +438,53 @@ grupos de candidatos demasiado grandes permanecen separados. La auditoría
 final exige cobertura uno-a-uno de todos los documentos de origen. Eventos no
 tienen grafo en esta versión.
 
-La limpieza final se limita a las cuatro colecciones de reverificación
-GrupLAC del propio run y a colecciones de errores vacías. Conserva las fuentes
-originales de Yuku, los HTML congelados, normalizaciones, manifiestos,
-auditorías, productos oficiales, enlaces y el grafo de reversión.
+La publicación final es conjunta: `scienti_final_release_publications.current`
+apunta simultáneamente a `works`, `projects`, `patents` y `events` solo cuando
+las cuatro materializaciones y la auditoría bibliográfica terminaron sin
+anomalías. Esta última impide publicar editoriales que sean ISBN o etiquetas
+filtradas, volúmenes o páginas contaminados, ediciones que absorban otros
+campos, idiomas que sean prosa y años usados como lugar de publicación. Los
+grafos base y finales no sustituyen punteros públicos mientras se construyen:
+los punteros anteriores se restauran hasta la publicación conjunta. Después,
+la limpieza elimina por nombre exacto las
+normalizaciones, enlaces y grafos intermedios del run y las salidas finales
+sustituidas. Conserva fuentes abiertas, HTML congelados, manifiestos,
+resoluciones de identificadores, auditorías, registros de ejecución y las
+cuatro salidas actuales. También conserva la captura normalizada de entidades
+actual y su puntero para compararla con la siguiente corrida; elimina la captura
+normalizada anterior una vez sustituida.
 
 ### Capa oficial de productos medidos
 
 `gruplac_production_data` se conserva como evidencia oficial de medición, no
-como autoridad bibliográfica de autores. La capa tiene cuatro artefactos
-persistentes:
+como autoridad bibliográfica de autores. La capa produce:
 
 - `minciencias_measured_products_<snapshot_tag>`: un documento compatible con la estructura
   superior de `Kahi.works` por `id_producto_pd`, con todas sus convocatorias,
   categorías, grupos y propietarios en `bibliographic_info.minciencias`.
-- `minciencias_measured_product_links_<snapshot_tag>`: una decisión versionada `linked`,
-  `ambiguous` o `unlinked` por producto oficial.
-- una nueva colección versionada del grafo, que contiene todos los trabajos
-  scrapeados y enriquece únicamente los enlaces seguros.
+- una colección de decisiones `linked`, `ambiguous` o `unlinked` para cada
+  destino exacto (`works`, `projects`, `patents`, `events`).
+- cuatro colecciones finales: los enlaces seguros enriquecen la entidad
+  scrapeada y los demás productos se preservan como identidades oficiales
+  independientes.
 - `minciencias_measurement_runs`: configuración, checkpoints, métricas y
   auditorías de las tres fases.
 
 El propietario `id_persona_pd` nunca se añade automáticamente a `authors`. La
 fecha `fcreacion_pd` se conserva como fecha de presentación y tampoco se usa
 como `year_published`. Sirve sólo como año exacto de enlace cuando coincide con
-el año bibliográfico scrapeado. Eventos, patentes y proyectos permanecen en la
-colección normalizada con su `target_entity`, pero no se declaran elegibles
-para `works`.
+el año scrapeado del destino. Cada producto solo participa en el destino
+indicado por `target_entity`; nunca cruza hacia otra entidad.
 
 La unión destinada a Kahi es inclusiva: todo trabajo scrapeado permanece en el
-grafo y todo producto oficial permanece en la colección normalizada. Los
-enlaces seguros comparten identificadores y metadatos; los no enlazados no se
-eliminan ni se fusionan por similitud débil.
+grafo. Los productos oficiales de tipo `works` con enlace seguro enriquecen el
+trabajo scrapeado; los ambiguos y no enlazados se materializan como identidades
+oficiales independientes. Los productos sin título permanecen como evidencia
+normalizada y se contabilizan, pero no se publica una obra sin título. Los
+productos cuyo destino es proyecto, patente o evento no pueden enlazarse con
+`works`. La fecha oficial de presentación no se convierte en fecha real de
+proyecto o evento. Todos los campos matriciales se publican como listas,
+incluido `groups: []` cuando no existe evidencia directa de grupo.
 
 Ejemplo para las capturas auditadas de agosto de 2026:
 

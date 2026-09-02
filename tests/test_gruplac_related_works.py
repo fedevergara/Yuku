@@ -2,10 +2,143 @@ import unittest
 
 from bs4 import BeautifulSoup
 
+from yuku.cvlac_related_works import clean_publisher_value, is_suspicious_publisher
 from yuku.gruplac_related_works import parse_product_row
 
 
 class GruplacRelatedWorksParsingTest(unittest.TestCase):
+    def test_publisher_validation_matches_all_observed_audit_values(self):
+        legitimate = [
+            "Voluntad",
+            "Voluntad Sa",
+            "Páginas de agua Editorial",
+            "Voluntad Editores Ltda. y Cia. S.C.A. (Bogotá)",
+            "Volcán ediciones",
+            "pagina seis",
+            "Voluntad Editores",
+            "V Centenario, Comisión de Murcia. Colección Carabelas",
+            "V O Graficas",
+        ]
+        contaminated = [
+            "78-958-8891-35-4",
+            "978-958-44-2350-4",
+            "978-958-5533-03-5",
+            (
+                "ISBN 978-958-699-297-8, Medio de divulgación: Papel Idioma "
+                "del documento original: Inglés, Idioma de la traducción: Español "
+                "Edición: 3, Serie: , Autor del documento original: Jefrrey K. Pinto"
+            ),
+            (
+                "ISBN 978-958-699-297-8, Medio de divulgación: Papel Idioma "
+                "del documento original: Inglés, Idioma de la traducción: Español "
+                "Edición: 3a, Serie: 1, Autor del documento original: Jeffrey K. Pinto"
+            ),
+            (
+                "ISBN 978-958-699-297-8, Medio de divulgación: Papel Idioma "
+                "del documento original: Inglés, Idioma de la traducción: Español "
+                "Edición: 3era, Serie: , Autor del documento original: Jeffrey K. Pinto"
+            ),
+        ]
+        for value in legitimate:
+            with self.subTest(value=value):
+                self.assertFalse(is_suspicious_publisher(value))
+                self.assertEqual(clean_publisher_value(value), value)
+        for value in contaminated:
+            with self.subTest(value=value):
+                self.assertTrue(is_suspicious_publisher(value))
+                self.assertEqual(clean_publisher_value(value), "")
+
+    def test_rejects_isbn_in_editorial_slot_and_preserves_raw_evidence(self):
+        raw = (
+            "1.- <strong>Otro libro publicado :</strong> Análisis de Fourier<br/>"
+            "Colombia,2007, ISBN: 978-958-44-2350-4 vol: 1 págs: 244, "
+            "Ed. 978-958-44-2350-4 Autores: JULIAN PERSONA"
+        )
+        row = BeautifulSoup(
+            f'<tr><td class="celdas_1"></td><td class="celdas1">{raw}</td></tr>',
+            "lxml",
+        ).find("tr")
+        record = parse_product_row(row, "Otros Libros publicados")
+        self.assertEqual(record["publisher"], "")
+        self.assertEqual(record["isbn"], ["978-958-44-2350-4"])
+        self.assertEqual(record["volume"], "1")
+        self.assertIn("Ed. 978-958-44-2350-4", record["raw_text"])
+
+    def test_rejects_translation_metadata_leaked_as_publisher(self):
+        row = BeautifulSoup(
+            """
+            <tr><td class="celdas_1"></td><td class="celdas1">
+              1.- <strong>Libro :</strong> Project Management<br/>
+              2014, Revista: ISSN , Libro: Project Management 3 Th Ed.
+              ISBN 978-958-699-297-8, Medio de divulgación: Papel
+              Idioma del documento original: Inglés, Edición: 3
+              Autores: ANA PERSONA
+            </td></tr>
+            """,
+            "lxml",
+        ).find("tr")
+        record = parse_product_row(row, "Traducciones")
+        self.assertEqual(record["publisher"], "")
+        self.assertEqual(record["edition"], "3")
+        self.assertEqual(record["publication_place"], "")
+        self.assertIn("ISBN 978-958-699-297-8", record["raw_text"])
+
+    def test_empty_volume_does_not_absorb_pages_label(self):
+        row = BeautifulSoup(
+            """
+            <tr><td class="celdas_1"></td><td class="celdas1">
+              1.- <strong>Libro pedagógico :</strong> Libro verificable<br/>
+              Colombia, 2019, ISBN: 978-958-5533-03-5 vol: págs: ,
+              Ed. 978-958-5533-03-5 Autores: ANA PERSONA
+            </td></tr>
+            """,
+            "lxml",
+        ).find("tr")
+        record = parse_product_row(row, "Otros Libros publicados")
+        self.assertEqual(record["volume"], "")
+        self.assertEqual(record["publisher"], "")
+
+    def test_volume_label_does_not_match_publisher_and_stops_at_isbn(self):
+        publisher_row = BeautifulSoup(
+            """
+            <tr><td class="celdas_1"></td><td class="celdas1">
+              1.- <strong>Libro :</strong> Libro verificable<br/>
+              Colombia, 2019, Ed. Voluntad Autores: ANA PERSONA
+            </td></tr>
+            """,
+            "lxml",
+        ).find("tr")
+        volume_row = BeautifulSoup(
+            """
+            <tr><td class="celdas_1"></td><td class="celdas1">
+              1.- <strong>Libro :</strong> Libro verificable<br/>
+              Colombia, 2019, Volumen 2. ISBN: 978-958-5533-03-5,
+              Autores: ANA PERSONA
+            </td></tr>
+            """,
+            "lxml",
+        ).find("tr")
+        publisher_record = parse_product_row(publisher_row, "Libros publicados")
+        volume_record = parse_product_row(volume_row, "Libros publicados")
+        self.assertEqual(publisher_record["publisher"], "Voluntad")
+        self.assertEqual(publisher_record["volume"], "")
+        self.assertEqual(volume_record["volume"], "2")
+
+    def test_empty_pages_does_not_absorb_authors(self):
+        row = BeautifulSoup(
+            """
+            <tr><td class="celdas_1"></td><td class="celdas1">
+              1.- <strong>Libro :</strong> Libro verificable<br/>
+              Colombia, 2023, Editorial: Editorial Ejemplo, Idiomas: Español,
+              Páginas: Autores: ANA PERSONA
+            </td></tr>
+            """,
+            "lxml",
+        ).find("tr")
+        record = parse_product_row(row, "Ediciones")
+        self.assertEqual(record["pages"], "")
+        self.assertEqual(record["authors"], ["ANA PERSONA"])
+
     def test_timeline_sections_keep_title_period_and_description_separate(self):
         sections = [
             "Estrategias Pedagógicas para el fomento a la CTI",
@@ -56,6 +189,79 @@ class GruplacRelatedWorksParsingTest(unittest.TestCase):
         self.assertEqual(record["title"], "Un artículo verificable")
         self.assertEqual(record["type_impactu"], "Articulo de revista")
         self.assertEqual(record["year"], 2024)
+        self.assertEqual(record["authors"], ["ANA PERSONA"])
+
+    def test_chapter_extracts_book_publisher_and_pages(self):
+        row = BeautifulSoup(
+            """
+            <tr>
+              <td class="celdas_1"><img src="chulo_1.jpg"/></td>
+              <td class="celdas1">
+                1.- <strong>Capítulo de libro :</strong>
+                Enseñanza de la Psicología Educativa<br/>
+                Colombia, 2024, La enseñanza de la psicología en Colombia,
+                ISBN: 978-958-798-684-6, Vol. 2, págs:100 - 120,
+                Ed. Ediciones Uniandes Autores: ANA PERSONA
+              </td>
+            </tr>
+            """,
+            "lxml",
+        ).find("tr")
+        record = parse_product_row(row, "Capítulos de libro publicados")
+        self.assertEqual(
+            record["book_title"], "La enseñanza de la psicología en Colombia"
+        )
+        self.assertEqual(record["publisher"], "Ediciones Uniandes")
+        self.assertEqual(record["volume"], "2")
+        self.assertEqual(record["pages"], "100 - 120")
+        self.assertEqual(record["start_page"], "100")
+        self.assertEqual(record["end_page"], "120")
+
+    def test_editorial_label_stops_before_language_and_pages(self):
+        row = BeautifulSoup(
+            """
+            <tr><td class="celdas_1"></td><td class="celdas1">
+              4.- <strong>Libro :</strong> Ebook Línea de Contenidos<br/>
+              Colombia, 2016, Editorial: Servicio Nacional de Aprendizaje,
+              Idiomas: Español, Páginas: 88 Autores: SONIA PERSONA
+            </td></tr>
+            """,
+            "lxml",
+        ).find("tr")
+        record = parse_product_row(row, "Libros publicados")
+        self.assertEqual(record["publisher"], "Servicio Nacional de Aprendizaje")
+        self.assertEqual(record["language"], "Español")
+        self.assertEqual(record["pages"], "88")
+
+    def test_language_label_inside_book_title_does_not_leak_prose(self):
+        row = BeautifulSoup(
+            """
+        <tr><td class="celdas_1"><img src="chulo_1.jpg"></td><td class="celdas1">
+          4.- <strong>Capítulo de libro :</strong> Inmigrantes<br>
+          Estados Unidos, 2017,
+          educación de idiomas: nuevas direcciones para adultos y educación
+          continua, Número 155, ISBN: 978-1-119-44378-0, Vol. , págs:61 - 69,
+          Ed. Autores: CLARENA LARROTA
+        </td></tr>
+        """,
+            "lxml",
+        ).find("tr")
+        record = parse_product_row(row, "Capítulos de libro publicados")
+        self.assertEqual(record["language"], "")
+
+    def test_empty_ed_field_does_not_absorb_authors(self):
+        row = BeautifulSoup(
+            """
+            <tr><td class="celdas_1"></td><td class="celdas1">
+              1.- <strong>Capítulo de libro :</strong> Capítulo verificable<br/>
+              Colombia, 2020, Libro contenedor, ISBN: 978-958-798-684-6,
+              Vol. , págs:18 - 118, Ed. Autores: ANA PERSONA
+            </td></tr>
+            """,
+            "lxml",
+        ).find("tr")
+        record = parse_product_row(row, "Capítulos de libro publicados")
+        self.assertEqual(record["publisher"], "")
         self.assertEqual(record["authors"], ["ANA PERSONA"])
 
     def test_timeline_without_end_date_keeps_start_date(self):

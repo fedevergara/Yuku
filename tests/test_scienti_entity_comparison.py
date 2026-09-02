@@ -204,6 +204,291 @@ class ScientiEntityVersionComparatorTests(unittest.TestCase):
             result["metrics"]["events"]["reidentified_occurrences_verified"], 1
         )
 
+    def _enable_v4_catalog_transition(self):
+        self.db[ENTITY_RUNS].update_one(
+            {"_id": "entities_old"},
+            {"$set": {
+                "config.normalizer_version": "scienti-entity-normalizer-v3",
+                "config.router_version": "scienti-exact-router-v4",
+            }},
+        )
+        self.db[ENTITY_RUNS].update_one(
+            {"_id": "entities_new"},
+            {"$set": {
+                "config.normalizer_version": "scienti-entity-normalizer-v4",
+                "config.router_version": "scienti-exact-router-v5",
+            }},
+        )
+        for entity in ENTITY_KEYS:
+            self.db[self.old_destinations[entity]].update_one(
+                {}, {"$set": {
+                    "source_metadata.normalizer_version": "scienti-entity-normalizer-v3",
+                    "source_metadata.router_version": "scienti-exact-router-v4",
+                }}
+            )
+            self.db[self.new_destinations[entity]].update_one(
+                {}, {"$set": {
+                    "source_metadata.normalizer_version": ENTITY_NORMALIZER_VERSION,
+                    "source_metadata.router_version": "scienti-exact-router-v5",
+                    "source_metadata.type_catalog_version": "1.0.0",
+                    "source_metadata.type_catalog_sha256": "659bee83ffe9cef7edb67b49e04f1ec650a0e79fbdbc3df0b06ec1164ab96406",
+                }}
+            )
+        route_fixtures = {
+            "works": (
+                "cvlac_exact_thesis_type",
+                "Trabajos dirigidos/Tutorías - Trabajos de grado de pregrado",
+                "Trabajos dirigidos/tutorias",
+                "Tesis de Pregrado",
+            ),
+            "projects": (
+                "cvlac_exact_project_type",
+                "Investigación y desarrollo",
+                "",
+                "Proyecto",
+            ),
+            "events": (
+                "cvlac_exact_event_type", "Congreso", "", "Evento",
+            ),
+            "patents": (
+                "cvlac_exact_patent_type", "Patente de invención",
+                "Patentes", "Patente",
+            ),
+        }
+        for entity, values in route_fixtures.items():
+            route_rule, product_type, source_section, impactu_type = values
+            native_type = {
+                "provenance": "scienti",
+                "source": "scienti",
+                "type": product_type,
+                "level": 1,
+                "parent": source_section or None,
+            }
+            impactu = {
+                "provenance": "scienti",
+                "source": "impactu",
+                "type": impactu_type,
+            }
+            old_types = [native_type]
+            if entity == "works":
+                old_types.append(impactu)
+            self.db[self.old_destinations[entity]].update_one(
+                {},
+                {"$set": {
+                    "types": old_types,
+                    "source_metadata.occurrences.0.route_rule": route_rule,
+                    "source_metadata.occurrences.0.product_type": product_type,
+                    "source_metadata.occurrences.0.source_section": source_section,
+                    "source_metadata.occurrences.0.source_collection": "profiles",
+                    "source_metadata.occurrences.0.record_index": 0,
+                    "source_metadata.occurrences.0.identity_namespace": (
+                        "patent" if entity == "patents" else ""
+                    ),
+                }},
+            )
+            self.db[self.new_destinations[entity]].update_one(
+                {},
+                {"$set": {
+                    "types": old_types + ([] if entity == "works" else [impactu]),
+                    "source_metadata.occurrences.0.route_rule": route_rule,
+                    "source_metadata.occurrences.0.product_type": product_type,
+                    "source_metadata.occurrences.0.source_section": source_section,
+                    "source_metadata.occurrences.0.source_collection": "profiles",
+                    "source_metadata.occurrences.0.record_index": 0,
+                    "source_metadata.occurrences.0.identity_namespace": (
+                        "patent" if entity == "patents" else ""
+                    ),
+                }},
+            )
+        for collection in (
+            self.old_destinations["patents"], self.new_destinations["patents"]
+        ):
+            self.db[collection].update_one(
+                {},
+                {"$set": {
+                    "source_metadata.occurrences.0.route_rule": "cvlac_exact_patent_type",
+                    "source_metadata.occurrences.0.source_collection": "profiles",
+                    "source_metadata.occurrences.0.record_index": 0,
+                }},
+            )
+        for entity, fields in (
+            ("projects", ("date_init", "date_end")),
+            ("events", ("date_held",)),
+        ):
+            old_document = self.db[self.old_destinations[entity]].find_one({})
+            self.db[self.new_destinations[entity]].update_one(
+                {}, {"$set": {field: old_document.get(field) for field in fields}}
+            )
+        self.db.profiles.replace_one(
+            {"_id": "0000000001"},
+            {
+                "_id": "0000000001",
+                "patents": [{
+                    "product_type": "Patente de invención",
+                    "source_section": "Patentes",
+                }],
+            },
+            upsert=True,
+        )
+
+    def test_v4_catalog_routes_added_works_and_preserves_patent_occurrences(self):
+        self._enable_v4_catalog_transition()
+        occurrence = {
+            "id": "occ-added-work",
+            "source_kind": "cvlac",
+            "source_collection": "profiles",
+            "source_id": "0000000002",
+            "record_index": 0,
+            "route_rule": "cvlac_production_channel",
+            "product_type": "Artículo científico",
+            "source_section": "Articulos",
+            "metadata": {},
+        }
+        self.db[self.new_destinations["works"]].insert_one(
+            {
+                "_id": "new-catalog-work",
+                "titles": [{"title": "Trabajo agregado por catálogo"}],
+                "updated": [{"source": "scienti", "time": 2}],
+                "types": [
+                    {
+                        "provenance": "scienti",
+                        "source": "scienti",
+                        "type": "Artículo científico",
+                        "level": 1,
+                        "parent": "Articulos",
+                    },
+                    {
+                        "provenance": "scienti",
+                        "source": "impactu",
+                        "type": "Articulo de revista",
+                    },
+                ],
+                "source_metadata": {
+                    "normalizer_version": ENTITY_NORMALIZER_VERSION,
+                    "router_version": "scienti-exact-router-v5",
+                    "type_catalog_version": "1.0.0",
+                    "type_catalog_sha256": "659bee83ffe9cef7edb67b49e04f1ec650a0e79fbdbc3df0b06ec1164ab96406",
+                    "family": "work",
+                    "identity_rule": "source_scoped_insufficient_anchors",
+                    "identity_key": "source|works|cvlac|0000000002|0|trabajo",
+                    "occurrences": [occurrence],
+                },
+            }
+        )
+
+        result = self._run("catalog_v4_comparison")
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["transition_profile"], "catalog_routing_v4")
+        self.assertEqual(result["metrics"]["works"]["catalog_added_documents"], 1)
+        self.assertEqual(result["metrics"]["patents"]["old_occurrences"], 1)
+
+    def test_v4_catalog_transition_detects_lost_patent_occurrence(self):
+        self._enable_v4_catalog_transition()
+        self.db[self.new_destinations["patents"]].update_one(
+            {}, {"$set": {"source_metadata.occurrences.0.id": "occ-new-patent"}}
+        )
+
+        result = self._run("catalog_v4_loss")
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(
+            result["finding_counts"]["patents.catalog_occurrence_destination_count"], 1
+        )
+
+    def test_v4_catalog_transition_detects_wrong_impactu_type(self):
+        self._enable_v4_catalog_transition()
+        self.db[self.new_destinations["projects"]].update_one(
+            {},
+            {"$set": {"types.1.type": "Evento"}},
+        )
+
+        result = self._run("catalog_v4_wrong_type")
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(
+            result["finding_counts"]["projects.invalid_catalog_types"], 1
+        )
+
+    def test_v4_catalog_transition_uses_compound_occurrence_identity(self):
+        self._enable_v4_catalog_transition()
+        for collection in (
+            self.old_destinations["projects"],
+            self.new_destinations["projects"],
+        ):
+            self.db[collection].update_one(
+                {},
+                {"$set": {
+                    "source_metadata.occurrences.0.id": "occ-patents",
+                }},
+            )
+
+        result = self._run("catalog_v4_compound_identity")
+
+        self.assertEqual(result["status"], "passed")
+        self.assertNotIn(
+            "patents.catalog_occurrence_destination_count",
+            result["finding_counts"],
+        )
+
+    def test_v4_catalog_transition_validates_enriched_patent_metadata(self):
+        self._enable_v4_catalog_transition()
+        self.db.profiles.update_one(
+            {"_id": "0000000001"},
+            {"$set": {"patents.0.year": 2024}},
+        )
+        self.db[self.new_destinations["patents"]].update_one(
+            {},
+            {"$set": {"source_metadata.occurrences.0.metadata.year": 2024}},
+        )
+
+        result = self._run("catalog_v4_patent_enrichment")
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(
+            result["metrics"]["patents"]["source_occurrences_verified"], 1
+        )
+
+    def test_same_schema_snapshot_refresh_records_drift_without_failing(self):
+        self._enable_v4_catalog_transition()
+        self.db[ENTITY_RUNS].update_one(
+            {"_id": "entities_old"},
+            {"$set": {
+                "config.normalizer_version": ENTITY_NORMALIZER_VERSION,
+                "config.router_version": "scienti-exact-router-v5",
+            }},
+        )
+        for entity in ENTITY_KEYS:
+            self.db[self.old_destinations[entity]].update_one(
+                {},
+                {"$set": {
+                    "source_metadata.normalizer_version": ENTITY_NORMALIZER_VERSION,
+                    "source_metadata.router_version": "scienti-exact-router-v5",
+                    "source_metadata.type_catalog_version": "1.0.0",
+                    "source_metadata.type_catalog_sha256": "659bee83ffe9cef7edb67b49e04f1ec650a0e79fbdbc3df0b06ec1164ab96406",
+                }},
+            )
+        self.db[self.new_destinations["projects"]].update_one(
+            {}, {"$set": {"titles.0.title": "Registro actualizado"}}
+        )
+        self.db[self.old_destinations["events"]].delete_many({})
+        self.db[self.old_destinations["events"]].insert_one({
+            "_id": "removed-event",
+            "updated": [{"source": "scienti", "time": 1}],
+            "source_metadata": {
+                "normalizer_version": ENTITY_NORMALIZER_VERSION,
+                "router_version": "scienti-exact-router-v5",
+            },
+        })
+
+        result = self._run("same_schema_refresh")
+
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["transition_profile"], "snapshot_refresh")
+        self.assertEqual(result["metrics"]["projects"]["modified_documents"], 1)
+        self.assertEqual(result["metrics"]["events"]["removed_documents"], 1)
+        self.assertEqual(result["metrics"]["events"]["added_documents"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

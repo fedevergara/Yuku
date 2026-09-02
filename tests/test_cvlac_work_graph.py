@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 import mongomock
 
 from yuku.cvlac_work_graph import (
+    CheckpointedNormalizedWorkGraphBuilder,
     CompactUnionFind,
     CvlacWorkGraphBuilder,
     UnionFind,
@@ -15,11 +16,13 @@ from yuku.cvlac_work_graph import (
     name_token_key,
     normalize_isbn_identity,
     parse_group_membership_period,
+    WORK_GRAPH_PUBLICATIONS,
 )
 from yuku.cvlac_related_works import (
     extract_directed_title_and_affiliation,
     extract_authors,
     extract_title,
+    parse_blockquote,
     split_oriented_people,
 )
 from yuku.gruplac_related_works import normalize_gruplac_document
@@ -79,6 +82,55 @@ class DoiIdentityTest(unittest.TestCase):
         self.assertEqual(normalize_isbn_identity("978-958-683-966-2"), "9789586839662")
         self.assertEqual(normalize_isbn_identity("0"), "")
         self.assertEqual(normalize_isbn_identity("978-958-683-966-9"), "")
+
+
+class CvlacBookMetadataTest(unittest.TestCase):
+    def parse(self, section, value):
+        blockquote = BeautifulSoup(f"<blockquote>{value}</blockquote>", "lxml").find(
+            "blockquote"
+        )
+        return parse_blockquote("0000000001", section, blockquote)
+
+    def test_extracts_classic_chapter_publication_context(self):
+        record = self.parse(
+            "Capitulos de libro",
+            'ANA PERSONA, "Título del capítulo" Libro contenedor . En: Colombia '
+            'ISBN: 978-958-26-0193-5 ed: Ediciones Universidad Central, '
+            'v. 2, p.227 - 236 ,2013',
+        )
+        self.assertEqual(record["title"], "Título del capítulo")
+        self.assertEqual(record["book_title"], "Libro contenedor")
+        self.assertEqual(record["publisher"], "Ediciones Universidad Central")
+        self.assertEqual(record["volume"], "2")
+        self.assertEqual(record["pages"], "227 - 236")
+        self.assertEqual(record["start_page"], "227")
+        self.assertEqual(record["end_page"], "236")
+
+    def test_extracts_new_labelled_book_without_absorbing_areas(self):
+        record = self.parse(
+            "Libro de Formacion",
+            "<i>Nombre del libro:</i> Bioética y animales, "
+            "<i>Fecha de presentación:</i> 2021 - Marzo, "
+            "<i>Isbn:</i> 978-958-53393-0-9, "
+            "<i>Medio de divulgación:</i> Papel, "
+            "<i>Lugar de publicación:</i> Colombia, "
+            "<i>Editorial:</i> Universidad de Córdoba, "
+            "<br/><b>Areas:</b> Ciencias Naturales",
+        )
+        self.assertEqual(record["title"], "Bioética y animales")
+        self.assertEqual(record["publisher"], "Universidad de Córdoba")
+        self.assertEqual(record["publication_place"], "Colombia")
+        self.assertEqual(record["dissemination_medium"], "Papel")
+
+    def test_does_not_promote_isbn_repeated_in_editorial_slot(self):
+        record = self.parse(
+            "Libros",
+            'ANA PERSONA, "Libro" En: Colombia 2019. '
+            'ed:978-958-5533-03-5 ISBN: 978-958-5533-03-5 v. pags.',
+        )
+        self.assertEqual(record["publisher"], "")
+        self.assertEqual(record["volume"], "")
+        self.assertEqual(record["pages"], "")
 
 
 class GrupLacAffiliationRuleTest(unittest.TestCase):
@@ -311,6 +363,34 @@ class ReviewCheckpointTest(unittest.TestCase):
         review = db.reviews.find_one({})
         self.assertEqual(review["reason"], "doi_title_conflict")
         self.assertEqual(builder.review_buffer, [])
+
+    def test_deferred_publish_keeps_the_public_pointer_unchanged(self):
+        db = mongomock.MongoClient().dam
+        previous = {"_id": "current", "current_collection": "safe_graph"}
+        db[WORK_GRAPH_PUBLICATIONS].insert_one(previous)
+        builder = CheckpointedNormalizedWorkGraphBuilder(
+            db=db,
+            collection="candidate_graph",
+            source_collection="normalized_cvlac",
+            group_source_collection="normalized_gruplac",
+            gate={},
+            publish_pointer=False,
+        )
+        builder.run_id = "candidate_run"
+        builder.output_name = "candidate_output"
+        builder.runs.insert_one(
+            {"_id": builder.run_id, "audit": {"works": 1}}
+        )
+        db[builder.output_name].insert_one({"_id": "work"})
+
+        result = builder._publish(db[builder.output_name])
+
+        self.assertFalse(result["pointer_published"])
+        self.assertIn("candidate_graph", db.list_collection_names())
+        self.assertEqual(
+            db[WORK_GRAPH_PUBLICATIONS].find_one({"_id": "current"}),
+            previous,
+        )
 
 
 class MaterializationTest(unittest.TestCase):
@@ -560,7 +640,6 @@ class MaterializationTest(unittest.TestCase):
             "citations_count_openalex",
             "date_published",
             "external_urls",
-            "groups",
             "open_access",
             "primary_topic",
             "ranking",
@@ -571,11 +650,60 @@ class MaterializationTest(unittest.TestCase):
             "topics",
         }
         self.assertTrue(absent.isdisjoint(work))
+        self.assertEqual(work["groups"], [])
         self.assertEqual(work["doi"], "")
         self.assertEqual(work["keywords"], [])
         self.assertIsNone(work["year_published"])
         self.assertEqual(work["subjects"], [])
         self.assertEqual(work["titles"][0]["lang"], "")
+
+    def test_materializes_book_source_and_exact_provenance(self):
+        item = node("book", "chapter title", family="book_chapter", doi="")
+        item.update(
+            {
+                "source_kind": "cvlac",
+                "source_id": "0000000001",
+                "source_record_index": 7,
+                "book_title": "Libro contenedor",
+                "publisher": "Editorial Ejemplo",
+                "pages": "10 - 20",
+                "start_page": "10",
+                "end_page": "20",
+                "isbn": ["978-958-683-966-2"],
+                "identity_isbns": ["9789586839662"],
+            }
+        )
+        work = materialize_work([item], 1)
+        self.assertEqual(work["source"]["name"], "Libro contenedor")
+        self.assertEqual(
+            work["source"]["publisher"],
+            {"name": "Editorial Ejemplo", "country_code": ""},
+        )
+        self.assertEqual(work["bibliographic_info"]["start_page"], "10")
+        publisher = work["bibliographic_info"]["scienti"]["fields"]["publisher"]
+        self.assertEqual(publisher["status"], "consistent")
+        self.assertEqual(
+            publisher["candidates"][0]["occurrences"][0]["record_index"], 7
+        )
+
+    def test_publisher_conflict_is_preserved_but_not_consolidated(self):
+        first = node("a", "same chapter", family="book_chapter", doi="")
+        second = node("b", "same chapter", family="book_chapter", doi="")
+        for item, publisher in ((first, "Editorial Uno"), (second, "Editorial Dos")):
+            item.update(
+                {
+                    "book_title": "Libro compartido",
+                    "publisher": publisher,
+                    "source_kind": "cvlac",
+                    "source_id": item["_id"],
+                }
+            )
+        work = materialize_work([first, second], 1)
+        self.assertEqual(work["source"]["publisher"], {})
+        self.assertNotIn("publisher", work["bibliographic_info"])
+        evidence = work["bibliographic_info"]["scienti"]["fields"]["publisher"]
+        self.assertEqual(evidence["status"], "conflict")
+        self.assertEqual(len(evidence["candidates"]), 2)
 
     def test_preserves_author_and_subject_work_shape(self):
         item = node("a", "a work title")

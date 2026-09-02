@@ -447,18 +447,18 @@ empty string when the historical institution is not temporally safe). The rule
 is versioned as `gruplac-product-group-membership-v1`, so older checkpoints
 cannot silently resume with the new materialization contract.
 
-### Official measurement history and Kahi-compatible works
+### Official measurement history and Kahi-compatible final entities
 
 The official `gruplac_production_data` rows are normalized without treating
 `id_persona_pd` (the product owner/claimant) as a bibliographic author. The
-output uses Kahi's `works` top-level shape, stores types and rankings in their
-existing arrays, and preserves the complete group/convocatoria relationship
-under `bibliographic_info.minciencias`. Events, patents and projects are kept
-but marked for their target entity instead of being silently discarded.
+output preserves types, rankings and the complete group/convocatoria
+relationship. Exact catalog routing sends every product only to `works`,
+`projects`, `patents` or `events`.
 
-The three stages are independently checkpointed in
-`minciencias_measurement_runs`. A base run name receives the suffixes
-`_normalize`, `_link` and `_graph` automatically:
+Normalization, exact linkage and final materialization are independently
+checkpointed in `minciencias_measurement_runs`. The link and materialization
+commands accept `target_entity` through the Python API; the complete pipeline
+runs them for all four entities and publishes the four outputs atomically.
 
 ```
 yuku_run --mongo_dbname dam \
@@ -483,12 +483,14 @@ yuku_run --mongo_dbname dam \
   --minciencias_enriched_graph_collection cvlac_works_graph_full_v3_20260827
 ```
 
-Automatic links require exact normalized title and year, compatible product
-families, and at least one exact owner or group anchor. Generic titles require
-both anchors. Multiple acceptable candidates remain `ambiguous`; missing
-matches remain `unlinked`. Both are retained as standalone official products
-for later Kahi ingestion. The enriched graph remains a lossless copy of the
-scraped graph and changes no authorship assertions.
+Automatic links require exact normalized title and year, a compatible target,
+and at least one exact owner or group anchor. Generic titles require both
+anchors. Multiple acceptable candidates remain `ambiguous` and missing matches
+remain `unlinked`; both become standalone official records in their own entity.
+They receive no inferred authors or dates. Uniquely linked products enrich the
+scraped record without changing its authorship or temporal fields. Products
+without a usable title remain in the original open-data source and are counted.
+The final release pointer is `scienti_final_release_publications.current`.
 
 Recheck only GrupLAC pages classified as incomplete, preserving both versions
 and promoting only pages that become structurally complete:
@@ -552,12 +554,19 @@ from native-text PDFs); download the complete researcher directory; resolve
 historical people and groups; download, normalize, verify and audit GrupLAC;
 freeze and download the complete CVLAC universe (including group members and
 ambiguous candidate codes); normalize and audit CVLAC; normalize and audit the
-four strict entity collections; atomically publish their audited snapshot;
-publish the base graph; normalize and link the versioned official measured
-products; publish the enriched final graph; remove only run-owned transient
-verification artifacts. A stage cannot run before all its dependencies pass.
-Published snapshots, graphs and original Yuku collections are never removed by
-this command.
+four strict entity collections; compare them with the current release when one
+exists; atomically publish their audited snapshot; build the project and patent
+graphs; atomically materialize events; publish the base works graph; normalize
+and link the versioned official measured products; materialize all four final
+entities; audit explicit publisher and book metadata; atomically publish their
+joint release; then remove only exact run-owned intermediates and superseded
+final collections. A stage cannot run before all its dependencies pass. The
+current joint release, original sources, frozen HTML, manifests, audits and run
+records are always retained.
+Legacy per-entity pointers remain unchanged during final materialization and
+move only after the joint release gate passes.
+The current normalized entity snapshot is retained for the next exhaustive
+version comparison; only its superseded predecessor becomes a cleanup candidate.
 
 ## Normalize CVLAC Related Works
 
@@ -659,7 +668,9 @@ stronger record, but contradictory dates or registrations create separate
 components and an auditable review finding. Generic titles remain separate.
 The complete pipeline writes `scienti_projects_final_<tag>` and
 `scienti_patents_final_<tag>` atomically after verifying that every normalized
-source document occurs in exactly one graph component.
+source document occurs in exactly one graph component. Events do not use
+identity fusion: they are copied exactly into `scienti_events_final_<tag>` only
+after publication and an exhaustive identifier/count audit.
 
 The standalone command is:
 
@@ -705,6 +716,12 @@ identical identifiers and metadata and permits only reproducible date changes,
 the normalizer-version marker and normalization timestamps. Its summary and
 bounded anomaly examples are stored in `scienti_entity_version_comparisons`
 and `scienti_entity_version_comparison_anomalies`.
+
+For two snapshots produced by the same current normalizer and router, the
+comparison records added, removed, modified and unchanged documents as release
+drift. Structural validity remains enforced by the internal and four semantic
+audits. The complete pipeline performs this comparison automatically before
+every publication except the initial audited snapshot.
 
 For the v2-to-v3 semantic transition, the comparator additionally proves that
 only exact student/advisor role resolutions and conservative event sanitation

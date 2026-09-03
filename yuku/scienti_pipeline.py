@@ -23,7 +23,7 @@ from yuku.socrata_snapshot import SocrataSnapshotDownloader
 
 PIPELINE_RUNS = "scienti_pipeline_runs"
 PIPELINE_LOCKS = "scienti_pipeline_locks"
-PIPELINE_VERSION = "scienti-full-pipeline-v13"
+PIPELINE_VERSION = "scienti-full-pipeline-v14"
 
 
 STAGES = (

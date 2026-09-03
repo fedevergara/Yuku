@@ -10,6 +10,7 @@ from typing import Any
 from yuku.cvlac_related_works import (
     SUSPICIOUS_PUBLISHER_RE,
     VALID_PAGES_RE,
+    norm_text,
 )
 
 
@@ -79,6 +80,27 @@ class ScientiBibliographicEnrichmentAuditor:
             "base_consistent_book_titles": base.count_documents(book_query),
             "final_consistent_book_titles": final.count_documents(book_query),
             "publisher_conflicts_preserved": final.count_documents(conflict_query),
+            "base_resolved_multiple_publishers": base.count_documents(
+                {
+                    "bibliographic_info.scienti.publisher_entities.status": (
+                        "resolved_multiple"
+                    )
+                }
+            ),
+            "final_resolved_multiple_publishers": final.count_documents(
+                {
+                    "bibliographic_info.scienti.publisher_entities.status": (
+                        "resolved_multiple"
+                    )
+                }
+            ),
+            "publisher_multiple_candidates": final.count_documents(
+                {
+                    "bibliographic_info.scienti.publisher_entities.status": (
+                        "candidate_multiple"
+                    )
+                }
+            ),
         }
         fields = "bibliographic_info.scienti.fields"
         checks = {
@@ -154,7 +176,100 @@ class ScientiBibliographicEnrichmentAuditor:
             "suspicious_publication_place": final.count_documents(
                 {f"{fields}.publication_place.value": SUSPICIOUS_PUBLICATION_PLACE_RE}
             ),
+            "publisher_entity_resolution_loss": abs(
+                counts["base_resolved_multiple_publishers"]
+                - counts["final_resolved_multiple_publishers"]
+            ),
+            "invalid_publisher_entities": 0,
+            "publisher_entity_raw_mismatch": 0,
+            "publisher_entities_without_consistent_source": final.count_documents(
+                {
+                    "bibliographic_info.scienti.publisher_entities": {
+                        "$exists": True
+                    },
+                    f"{fields}.publisher.status": {"$ne": "consistent"},
+                }
+            ),
         }
+        entity_path = "bibliographic_info.scienti.publisher_entities"
+        cursor = final.find(
+            {entity_path: {"$exists": True}},
+            {
+                "source.publisher.name": 1,
+                entity_path: 1,
+            },
+        )
+        for document in cursor:
+            source = document.get("source") or {}
+            source = source if isinstance(source, dict) else {}
+            source_publisher = source.get("publisher") or {}
+            source_publisher = (
+                source_publisher if isinstance(source_publisher, dict) else {}
+            )
+            source_name = str(source_publisher.get("name") or "").strip()
+            bibliographic_info = document.get("bibliographic_info") or {}
+            bibliographic_info = (
+                bibliographic_info if isinstance(bibliographic_info, dict) else {}
+            )
+            scienti = bibliographic_info.get("scienti") or {}
+            scienti = scienti if isinstance(scienti, dict) else {}
+            raw_entity_data = scienti.get("publisher_entities")
+            valid_container = isinstance(raw_entity_data, dict)
+            entity_data = raw_entity_data if valid_container else {}
+            raw_value = str(entity_data.get("raw_value") or "").strip()
+            if not raw_value or source_name != raw_value:
+                checks["publisher_entity_raw_mismatch"] += 1
+            status = entity_data.get("status")
+            items_key = (
+                "entities" if status == "resolved_multiple" else "candidate_entities"
+            )
+            items = entity_data.get(items_key)
+            item_list = items if isinstance(items, list) else []
+            normalized_names = [
+                str(item.get("normalized_name") or "").strip()
+                for item in item_list
+                if isinstance(item, dict)
+            ]
+            display_names = [
+                str(item.get("name") or "").strip()
+                for item in item_list
+                if isinstance(item, dict)
+            ]
+            valid_status = status in {"resolved_multiple", "candidate_multiple"}
+            resolved_are_authorities = status != "resolved_multiple" or all(
+                isinstance(item, dict) and item.get("authority_id")
+                for item in item_list
+            )
+            valid_confidence = entity_data.get("confidence") == (
+                "high" if status == "resolved_multiple" else "medium"
+            )
+            valid_names = (
+                len(normalized_names) == len(item_list)
+                and len(display_names) == len(item_list)
+                and all(
+                    normalized_name == norm_text(display_name)
+                    for display_name, normalized_name in zip(
+                        display_names, normalized_names
+                    )
+                )
+            )
+            mutually_exclusive_items = not (
+                entity_data.get("entities") and entity_data.get("candidate_entities")
+            )
+            if (
+                not valid_container
+                or not valid_status
+                or not isinstance(items, list)
+                or len(items) < 2
+                or not valid_names
+                or len(set(normalized_names)) != len(normalized_names)
+                or not resolved_are_authorities
+                or not valid_confidence
+                or not entity_data.get("rule")
+                or not entity_data.get("rule_version")
+                or not mutually_exclusive_items
+            ):
+                checks["invalid_publisher_entities"] += 1
         critical = sum(checks.values())
         report = {
             "_id": audit_name,

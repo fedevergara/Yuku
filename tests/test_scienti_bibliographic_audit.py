@@ -99,6 +99,105 @@ class ScientiBibliographicEnrichmentAuditorTest(unittest.TestCase):
         self.assertEqual(result["checks"]["invalid_language"], 0)
         self.assertEqual(result["status"], "passed")
 
+    def test_valid_multiple_publisher_entities_pass_without_mutating_raw(self):
+        raw = "Instituto A Instituto B"
+        result = self._run(
+            [
+                {
+                    "_id": "multiple-publisher",
+                    "source": {"publisher": {"name": raw}},
+                    "bibliographic_info": {
+                        "publisher": {"name": raw},
+                        "scienti": {
+                            "fields": {
+                                "publisher": {
+                                    "status": "consistent",
+                                    "value": raw,
+                                }
+                            },
+                            "publisher_entities": {
+                                "status": "resolved_multiple",
+                                "raw_value": raw,
+                                "rule": "curated_exact_composite",
+                                "rule_version": "scienti-publisher-entities-v1",
+                                "confidence": "high",
+                                "entities": [
+                                    {
+                                        "authority_id": "publisher:a",
+                                        "name": "Instituto A",
+                                        "normalized_name": "instituto a",
+                                    },
+                                    {
+                                        "authority_id": "publisher:b",
+                                        "name": "Instituto B",
+                                        "normalized_name": "instituto b",
+                                    },
+                                ],
+                            },
+                        },
+                    },
+                }
+            ]
+        )
+        self.assertEqual(result["checks"]["invalid_publisher_entities"], 0)
+        self.assertEqual(result["checks"]["publisher_entity_raw_mismatch"], 0)
+        self.assertEqual(result["status"], "passed")
+
+    def test_malformed_or_mutating_publisher_entities_fail(self):
+        result = self._run(
+            [
+                {
+                    "_id": "bad-entities",
+                    "source": {"publisher": {"name": "Changed value"}},
+                    "bibliographic_info": {
+                        "scienti": {
+                            "fields": {},
+                            "publisher_entities": {
+                                "status": "resolved_multiple",
+                                "raw_value": "Original composite",
+                                "entities": [
+                                    {
+                                        "name": "Only one",
+                                        "normalized_name": "only one",
+                                    }
+                                ],
+                            },
+                        }
+                    },
+                }
+            ]
+        )
+        self.assertEqual(result["checks"]["invalid_publisher_entities"], 1)
+        self.assertEqual(result["checks"]["publisher_entity_raw_mismatch"], 1)
+        self.assertEqual(
+            result["checks"]["publisher_entities_without_consistent_source"], 1
+        )
+        self.assertEqual(result["status"], "failed")
+
+    def test_malformed_publisher_entity_container_is_reported_not_crashed(self):
+        result = self._run(
+            [
+                {
+                    "_id": "bad-container",
+                    "source": {"publisher": {"name": "Editorial A / Editorial B"}},
+                    "bibliographic_info": {
+                        "publisher": {"name": "Editorial A / Editorial B"},
+                        "scienti": {
+                            "fields": {
+                                "publisher": {
+                                    "status": "consistent",
+                                    "value": "Editorial A / Editorial B",
+                                }
+                            },
+                            "publisher_entities": ["invalid"],
+                        }
+                    },
+                }
+            ]
+        )
+        self.assertEqual(result["checks"]["invalid_publisher_entities"], 1)
+        self.assertEqual(result["status"], "failed")
+
     def test_metadata_leaks_fail_the_gate_and_are_reported_separately(self):
         result = self._run(
             [

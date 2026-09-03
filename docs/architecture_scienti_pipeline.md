@@ -454,6 +454,12 @@ cuatro salidas actuales. También conserva la captura normalizada de entidades
 actual y su puntero para compararla con la siguiente corrida; elimina la captura
 normalizada anterior una vez sustituida.
 
+Las cadenas editoriales compuestas se conservan literalmente en
+`source.publisher.name`. Una autoridad exacta puede añadir entidades separadas
+en `bibliographic_info.scienti.publisher_entities`; las divisiones sugeridas
+por separadores explícitos quedan como candidatos y nunca reemplazan el valor
+canónico sin verificación.
+
 ### Capa oficial de productos medidos
 
 `gruplac_production_data` se conserva como evidencia oficial de medición, no

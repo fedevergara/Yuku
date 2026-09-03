@@ -209,6 +209,10 @@ The unicity process uses a sparse evidence graph:
 * Conflicting author declarations for books are retained as evidence and
   candidates, but are not published as canonical authors unless a verified
   bibliographic authority resolves the conflict.
+* Composite publisher strings remain unchanged. Exact curated cases expose
+  resolved `bibliographic_info.scienti.publisher_entities`; explicit spaced
+  separators between publisher-like names are only medium-confidence
+  candidates until an authority confirms them.
 * A node without a safe edge is still materialized as an independent work; no
   occurrence is discarded merely because it could not be unified.
 

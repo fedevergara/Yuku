@@ -21,6 +21,7 @@ from yuku.scienti_routing import route_cvlac, route_gruplac
 
 GRAPH_VERSION = "minciencias-work-graph-v5"
 AFFILIATION_RULE_VERSION = "gruplac-product-group-membership-v1"
+PUBLISHER_ENTITY_RULE_VERSION = "scienti-publisher-entities-v1"
 WORK_GRAPH_PUBLICATIONS = "scienti_work_graph_publications"
 CVLAC_SNAPSHOT_RUNS = "scienti_cvlac_priority_runs"
 CVLAC_NORMALIZATION_AUDITS = "scienti_cvlac_normalization_audits"
@@ -580,6 +581,106 @@ BIBLIOGRAPHIC_FIELDS = (
 )
 
 
+CURATED_COMPOSITE_PUBLISHERS = (
+    {
+        "raw_names": (
+            "Instituto Alexander Von Humboldt Instituto De Ciencias "
+            "Naturales De La Universidad Nacional",
+        ),
+        "entities": (
+            {
+                "authority_id": "publisher:instituto-alexander-von-humboldt",
+                "name": "Instituto Alexander von Humboldt",
+            },
+            {
+                "authority_id": (
+                    "publisher:instituto-ciencias-naturales-universidad-nacional"
+                ),
+                "name": (
+                    "Instituto de Ciencias Naturales de la Universidad Nacional"
+                ),
+            },
+        ),
+    },
+)
+PUBLISHER_ENTITY_MARKER_RE = re.compile(
+    r"\b(?:editorial(?:es)?|ediciones?|editores?|editora|publishing|"
+    r"publishers?|press|universidad|university|universit[eà]|instituto)\b",
+    re.IGNORECASE,
+)
+PUBLISHER_SUBUNIT_MARKER_RE = re.compile(
+    r"\b(?:departamento|facultad|escuela|programa|divisi[oó]n|direcci[oó]n)\b",
+    re.IGNORECASE,
+)
+
+
+def _publisher_entity(name: str, authority_id: str | None = None) -> dict[str, str]:
+    entity = {
+        "name": name,
+        "normalized_name": norm_text(name),
+    }
+    if authority_id:
+        entity["authority_id"] = authority_id
+    return entity
+
+
+def _looks_like_publisher_entity(name: str) -> bool:
+    return bool(
+        name
+        and len(name) <= 200
+        and PUBLISHER_ENTITY_MARKER_RE.search(name)
+        and not PUBLISHER_SUBUNIT_MARKER_RE.search(name)
+    )
+
+
+def publisher_entity_evidence(value: str) -> dict[str, Any] | None:
+    """Resolve curated composites and flag only strong split candidates.
+
+    This enrichment never replaces the source publisher string. Unverified
+    separator-based splits remain candidates and are not canonical entities.
+    """
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return None
+    raw_key = norm_text(raw_value)
+    for authority in CURATED_COMPOSITE_PUBLISHERS:
+        if raw_key not in {norm_text(name) for name in authority["raw_names"]}:
+            continue
+        return {
+            "status": "resolved_multiple",
+            "raw_value": raw_value,
+            "rule": "curated_exact_composite",
+            "rule_version": PUBLISHER_ENTITY_RULE_VERSION,
+            "confidence": "high",
+            "entities": [
+                _publisher_entity(entity["name"], entity["authority_id"])
+                for entity in authority["entities"]
+            ],
+        }
+
+    split_rule = ""
+    if re.search(r"\s+/\s+", raw_value):
+        parts = re.split(r"\s+/\s+", raw_value)
+        split_rule = "spaced_slash"
+    elif ";" in raw_value:
+        parts = re.split(r"\s*;\s*", raw_value)
+        split_rule = "semicolon"
+    else:
+        return None
+    if len(parts) != 2 or not all(_looks_like_publisher_entity(part) for part in parts):
+        return None
+    if len({norm_text(part) for part in parts}) != 2:
+        return None
+    return {
+        "status": "candidate_multiple",
+        "raw_value": raw_value,
+        "rule": f"explicit_{split_rule}_publisher_markers",
+        "rule_version": PUBLISHER_ENTITY_RULE_VERSION,
+        "confidence": "medium",
+        "candidate_entities": [_publisher_entity(part) for part in parts],
+    }
+
+
 def bibliographic_field_evidence(
     nodes: list[dict[str, Any]], field: str
 ) -> dict[str, Any]:
@@ -671,6 +772,9 @@ def materialize_bibliographic_context(
         "extraction_rule": "explicit_bibliographic_labels_only",
         "fields": evidence,
     }
+    publisher_entities = publisher_entity_evidence(publisher)
+    if publisher_entities:
+        bibliographic_info["scienti"]["publisher_entities"] = publisher_entities
     entry["bibliographic_info"] = bibliographic_info
 
     book_title = (evidence.get("book_title") or {}).get("value", "")
@@ -1420,6 +1524,7 @@ class CvlacWorkGraphBuilder:
                 "group_source_collection": self.group_source_collection_name,
                 "target_collection": self.collection_name,
                 "graph_version": GRAPH_VERSION,
+                "publisher_entity_rule_version": PUBLISHER_ENTITY_RULE_VERSION,
             }
         )
 
@@ -2496,6 +2601,7 @@ class CheckpointedNormalizedWorkGraphBuilder(CvlacWorkGraphBuilder):
         return {
             "graph_version": GRAPH_VERSION,
             "affiliation_rule_version": AFFILIATION_RULE_VERSION,
+            "publisher_entity_rule_version": PUBLISHER_ENTITY_RULE_VERSION,
             "source_mode": self.source_mode,
             "cvlac_normalized_collection": self.source_collection_name,
             "gruplac_normalized_collection": self.group_source_collection_name,
@@ -3015,6 +3121,7 @@ class CheckpointedNormalizedWorkGraphBuilder(CvlacWorkGraphBuilder):
                 "_id": self.run_id,
                 "status": "published",
                 "graph_version": GRAPH_VERSION,
+                "publisher_entity_rule_version": PUBLISHER_ENTITY_RULE_VERSION,
                 "collection": self.collection_name,
                 "previous_collection": previous,
                 "works": expected_works,
@@ -3287,6 +3394,7 @@ class CheckpointedNormalizedWorkGraphBuilder(CvlacWorkGraphBuilder):
                 "run_id": self.run_id,
                 "status": "complete",
                 "graph_version": GRAPH_VERSION,
+                "publisher_entity_rule_version": PUBLISHER_ENTITY_RULE_VERSION,
                 "collection": self.collection_name,
                 "previous_collection": (
                     ((stages.get("publish") or {}).get("result") or {}).get(

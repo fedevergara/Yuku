@@ -16,6 +16,7 @@ from yuku.cvlac_work_graph import (
     name_token_key,
     normalize_isbn_identity,
     parse_group_membership_period,
+    publisher_entity_evidence,
     WORK_GRAPH_PUBLICATIONS,
 )
 from yuku.cvlac_related_works import (
@@ -704,6 +705,48 @@ class MaterializationTest(unittest.TestCase):
         evidence = work["bibliographic_info"]["scienti"]["fields"]["publisher"]
         self.assertEqual(evidence["status"], "conflict")
         self.assertEqual(len(evidence["candidates"]), 2)
+
+    def test_resolves_curated_composite_without_changing_raw_publisher(self):
+        raw = (
+            "Instituto Alexander Von Humboldt Instituto De Ciencias "
+            "Naturales De La Universidad Nacional"
+        )
+        item = node("book", "chapter title", family="book_chapter", doi="")
+        item.update({"publisher": raw, "book_title": "Libro contenedor"})
+
+        work = materialize_work([item], 1)
+
+        self.assertEqual(work["source"]["publisher"]["name"], raw)
+        resolution = work["bibliographic_info"]["scienti"]["publisher_entities"]
+        self.assertEqual(resolution["status"], "resolved_multiple")
+        self.assertEqual(
+            [entity["name"] for entity in resolution["entities"]],
+            [
+                "Instituto Alexander von Humboldt",
+                "Instituto de Ciencias Naturales de la Universidad Nacional",
+            ],
+        )
+        self.assertTrue(all(entity.get("authority_id") for entity in resolution["entities"]))
+
+    def test_flags_explicit_two_publisher_separator_as_candidate(self):
+        evidence = publisher_entity_evidence(
+            "Siglo Del Hombre Editores / Ediciones Uniandes"
+        )
+        self.assertEqual(evidence["status"], "candidate_multiple")
+        self.assertEqual(evidence["confidence"], "medium")
+        self.assertNotIn("entities", evidence)
+
+    def test_does_not_split_hierarchies_locations_or_legal_names(self):
+        values = [
+            "Universidad De Los Andes / Departamento De Ciencia Politica",
+            "Springer-Verlag Berlin/Heidelberg",
+            "Springer;Cham",
+            "Wiley & Sons",
+            "Universidad Pedagógica y Tecnológica de Colombia",
+        ]
+        for value in values:
+            with self.subTest(value=value):
+                self.assertIsNone(publisher_entity_evidence(value))
 
     def test_preserves_author_and_subject_work_shape(self):
         item = node("a", "a work title")

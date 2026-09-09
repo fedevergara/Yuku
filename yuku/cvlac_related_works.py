@@ -810,6 +810,115 @@ def extract_profile_author_name(soup: BeautifulSoup) -> str:
     return ""
 
 
+def _profile_table(soup: BeautifulSoup, anchor_name: str):
+    anchor = soup.find("a", {"name": anchor_name})
+    if not anchor:
+        return None
+    parent_table = anchor.parent.find("table") if anchor.parent else None
+    # Do not cross into the next profile section when this one is empty.
+    return parent_table or anchor.find_next_sibling("table")
+
+
+def extract_profile_general(soup: BeautifulSoup) -> dict[str, str]:
+    """Extract explicitly labelled public CVLAC identity attributes."""
+    table = _profile_table(soup, "datos_generales")
+    output: dict[str, str] = {}
+    if not table:
+        return output
+    aliases = {
+        "nombre": "name",
+        "nombre en citaciones": "citation_name",
+        "nacionalidad": "nationality",
+        "sexo": "sex",
+        "categoria": "category",
+    }
+    for row in table.find_all("tr"):
+        cells = row.find_all(["td", "th"], recursive=False)
+        if len(cells) != 2:
+            continue
+        key = aliases.get(norm_text(cells[0].get_text(" ", strip=True)))
+        value = strip_value(cells[1].get_text(" ", strip=True))
+        if key and value:
+            output[key] = value
+    return output
+
+
+def extract_profile_identifiers(soup: BeautifulSoup) -> list[dict[str, str]]:
+    """Keep public identifier URLs with their explicit CVLAC labels."""
+    output: list[dict[str, str]] = []
+    seen = set()
+    for anchor_name in ("redes_identificadores", "red_identificadores"):
+        table = _profile_table(soup, anchor_name)
+        if not table:
+            continue
+        for link in table.find_all("a", href=True):
+            label = strip_value(link.get_text(" ", strip=True))
+            url = clean_text(link.get("href"))
+            key = (norm_text(label), url)
+            if label and url and key not in seen:
+                output.append({"label": label, "url": url})
+                seen.add(key)
+    return output
+
+
+def extract_profile_degrees(soup: BeautifulSoup) -> list[dict[str, str]]:
+    """Extract explicitly structured academic formation entries."""
+    table = _profile_table(soup, "formacion_acad")
+    output: list[dict[str, str]] = []
+    if not table:
+        return output
+    for cell in table.find_all("td"):
+        bold = cell.find("b")
+        if not bold:
+            continue
+        parts = [clean_text(value) for value in cell.stripped_strings]
+        parts = [value for value in parts if value]
+        if len(parts) < 2:
+            continue
+        output.append({
+            "level": parts[0],
+            "institution": parts[1],
+            "program": parts[2] if len(parts) > 2 else "",
+            "period": parts[3] if len(parts) > 3 else "",
+        })
+    return output
+
+
+def extract_profile_experiences(soup: BeautifulSoup) -> list[dict[str, str]]:
+    """Extract explicitly named employers; identity is resolved later by Kahi."""
+    table = _profile_table(soup, "experiencia")
+    output: list[dict[str, str]] = []
+    if not table:
+        return output
+    seen = set()
+    for cell in table.find_all("td"):
+        bold = cell.find("b")
+        institution = strip_value(bold.get_text(" ", strip=True)) if bold else ""
+        if not institution:
+            continue
+        text = clean_text(cell.get_text(" ", strip=True))
+        period_match = re.search(
+            r"horas\s+Semanales\s+(.*?)(?=\s+Actividades\s+de|$)",
+            text,
+            flags=re.I,
+        )
+        period = strip_value(period_match.group(1)) if period_match else ""
+        key = (norm_text(institution), norm_text(period))
+        if key not in seen:
+            output.append({"institution": institution, "period": period})
+            seen.add(key)
+    return output
+
+
+def extract_person_profile(soup: BeautifulSoup) -> dict[str, Any]:
+    return {
+        "general": extract_profile_general(soup),
+        "identifiers": extract_profile_identifiers(soup),
+        "degrees": extract_profile_degrees(soup),
+        "experiences": extract_profile_experiences(soup),
+    }
+
+
 def extract_records_from_soup(
     profile_id: str,
     soup: BeautifulSoup,
@@ -1101,6 +1210,7 @@ def normalize_related_works_document(profile_id: str, html: str) -> dict[str, An
         "id_persona_pr": profile_id,
         "url_persona": SCIENTI_CVLAC_URL + profile_id,
         "profile_name": profile_author_name,
+        "profile": extract_person_profile(soup),
         "production_counts": len(production),
         "production": production,
         "patents_counts": len(patents),

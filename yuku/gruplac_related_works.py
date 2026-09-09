@@ -481,6 +481,68 @@ def parse_basic_data(table) -> dict[str, str]:
     return result
 
 
+def parse_group_institutions(table) -> list[dict[str, Any]]:
+    """Extract named GrupLAC institutions without attempting identity resolution."""
+    institutions: list[dict[str, Any]] = []
+    if table is None:
+        return institutions
+    for row in table.find_all("tr", recursive=False):
+        cells = row.find_all("td", recursive=False)
+        if len(cells) != 1:
+            continue
+        value = clean_text(cells[0].get_text(" ", strip=True))
+        value = NUMBERED_PRODUCT_RE.sub("", value)
+        endorsed = bool(re.search(r"\(\s*Avalado\s*\)\s*$", value, re.I))
+        value = re.sub(r"\s*-?\s*\(\s*Avalado\s*\)\s*$", "", value, flags=re.I)
+        if value and value != "Instituciones":
+            institutions.append({"name": value, "endorsed": endorsed})
+    return institutions
+
+
+def parse_group_strategic_plan(table) -> dict[str, str]:
+    """Extract the five explicitly labelled public strategic-plan sections."""
+    if table is None:
+        return {}
+    text = clean_text(table.get_text(" ", strip=True))
+    labels = (
+        ("TXT_PLAN_TRABAJO", "Plan de trabajo"),
+        ("TXT_ESTADO_ARTE", "Estado del arte"),
+        ("TXT_OBJETIVOS", "Objetivos"),
+        ("TXT_RETOS", "Retos"),
+        ("TXT_VISION", "Visión"),
+    )
+    result: dict[str, str] = {}
+    for position, (key, label) in enumerate(labels):
+        following = labels[position + 1:]
+        end = "|".join(re.escape(item[1]) for item in following) or r"\Z"
+        match = re.search(
+            re.escape(label) + r"\s*:\s*(.*?)(?=\s+(?:" + end + r")\s*:|$)",
+            text,
+            flags=re.I,
+        )
+        value = clean_text(match.group(1)) if match else ""
+        if value:
+            result[key] = value
+    return result
+
+
+def parse_group_research_lines(table) -> list[str]:
+    """Extract declared research lines as ordered source values."""
+    values: list[str] = []
+    if table is None:
+        return values
+    for row in table.find_all("tr", recursive=False):
+        cells = row.find_all("td", recursive=False)
+        if len(cells) != 1:
+            continue
+        value = NUMBERED_PRODUCT_RE.sub(
+            "", clean_text(cells[0].get_text(" ", strip=True))
+        )
+        if value and value != "Líneas de investigación declaradas por el grupo":
+            values.append(value)
+    return uniq_keep_order(values)
+
+
 def parse_members(table) -> list[dict[str, str]]:
     members: list[dict[str, str]] = []
     if table is None:
@@ -518,6 +580,11 @@ def normalize_gruplac_document(
     tables = soup.find_all("table")
     by_heading = {table_heading(table): table for table in tables if table_heading(table)}
     basic = parse_basic_data(by_heading.get("Datos básicos"))
+    institutions = parse_group_institutions(by_heading.get("Instituciones"))
+    strategic_plan = parse_group_strategic_plan(by_heading.get("Plan Estratégico"))
+    research_lines = parse_group_research_lines(
+        by_heading.get("Líneas de investigación declaradas por el grupo")
+    )
     members = parse_members(by_heading.get("Integrantes del grupo"))
     production: list[dict[str, Any]] = []
     for table in tables:
@@ -537,6 +604,9 @@ def normalize_gruplac_document(
         "nro": str(nro),
         "url_gruplac": url or (f"{SCIENTI_GRUPLAC_URL}{nro}" if nro else ""),
         "basic": basic,
+        "institutions": institutions,
+        "strategic_plan": strategic_plan,
+        "research_lines": research_lines,
         "members_count": len(members),
         "members": members,
         "production_count": len(production),

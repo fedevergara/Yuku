@@ -17,13 +17,13 @@ from yuku.gruplac_related_works import normalize_gruplac_document
 
 
 CVLAC_PARSER_NAME = "yuku.cvlac_related_works"
-CVLAC_PARSER_VERSION = "3.1.5"
+CVLAC_PARSER_VERSION = "3.2.0"
 CVLAC_NORMALIZATION_RUNS = "scienti_cvlac_normalization_runs"
 CVLAC_AUDIT_RUNS = "scienti_cvlac_normalization_audits"
 GRUPLAC_AUDIT_RUNS = "scienti_gruplac_normalization_audits"
 GRUPLAC_NORMALIZATION_RUNS = "scienti_gruplac_normalization_runs"
 GRUPLAC_PARSER_NAME = "yuku.gruplac_related_works"
-GRUPLAC_PARSER_VERSION = "3.1.4"
+GRUPLAC_PARSER_VERSION = "3.2.0"
 
 RUN_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,79}")
 DOI_RE = re.compile(r"^https://doi\.org/10\.\d{4,9}/\S+$", re.IGNORECASE)

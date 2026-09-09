@@ -2,15 +2,15 @@
 
 The channel/section is part of the source contract.  No substring, fuzzy or
 accent-insensitive decision is made here.  The authoritative entity vocabulary
-and its version come from ``Tipos_ImpactU_Definitivo.xlsx`` through the bundled
-ImpactU catalog.
+and its version come from ``Tipos_ImpactU_Definitivo.xlsx`` through the shared
+``Kahi_impactu_type_catalog`` package.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from yuku.impactu_type_catalog import exact_key, get_impactu_catalog
+from kahi_impactu_type_catalog import exact_key, get_impactu_catalog
 
 
 ENTITY_ROUTER_VERSION = "scienti-exact-router-v5"

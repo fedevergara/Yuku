@@ -88,7 +88,8 @@ def main():
             'sodapy',
             'beautifulsoup4',
             'lxml',
-            'openpyxl'
+            'openpyxl',
+            'Kahi_impactu_type_catalog==0.1.0',
         ],
     )
 

@@ -650,13 +650,14 @@ The `type_impactu` values for `events` and `projects` follow the mappings in
 The profile-level collections above remain source evidence. A second,
 checkpointed layer publishes works (including theses, software, teaching and
 non-bibliographic products), projects, patents and events into four
-Kahi-compatible collections. The authoritative `ALL` sheet from
-`Tipos_ImpactU_Definitivo.xlsx` is converted reproducibly into the bundled,
-versioned `yuku/data/tipos_impactu_v1.csv`; runtime processing never depends
-on the external workbook. Only exact source channel, section and product-type
-pairs are accepted; case, HTML entities and whitespace are normalized, while
-accents and words remain significant. Unknown variants stay in source evidence
-and are counted as `unmapped` instead of being guessed.
+Kahi-compatible collections. The authoritative `ALL`, `COAR`, `REDCOL`, and
+`INFO-EU-REPO` sheets from `Tipos_ImpactU_Definitivo.xlsx` are converted
+reproducibly into the versioned JSON distributed by
+`Kahi_impactu_type_catalog`. Runtime processing never depends on the external
+workbook or a Yuku-specific copy. Only exact source channel, section and
+product-type pairs are accepted; case, HTML entities and whitespace are
+normalized, while accents and words remain significant. Unknown variants stay
+in source evidence and are counted as `unmapped` instead of being guessed.
 
 The bibliographic works graph applies the same router before creating nodes.
 Projects, patents and events are counted as explicit routing exclusions and

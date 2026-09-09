@@ -413,11 +413,12 @@ auditorías semánticas terminan sin hallazgos críticos. Una convocatoria nueva
 se publica como `audited_snapshot`; las comparaciones exhaustivas se reservan
 para migraciones de parser sobre una misma captura.
 
-La normalización de entidades usa `scienti-exact-router-v5` y el catálogo
-reproducible `yuku/data/tipos_impactu_v1.csv`, generado desde la hoja `ALL` de
-`Tipos_ImpactU_Definitivo.xlsx`. La ejecución no necesita el Excel. Una ruta
-requiere la combinación exacta de fuente, canal, sección y tipo conocida. No
-usa subcadenas, distancia de edición ni semejanza de títulos. Los tipos no
+La normalización de entidades usa `scienti-exact-router-v5` y el catálogo JSON
+reproducible de `Kahi_impactu_type_catalog`, generado desde `ALL`, `COAR`,
+`REDCOL` e `INFO-EU-REPO` de `Tipos_ImpactU_Definitivo.xlsx`. La ejecución no
+necesita el Excel ni mantiene una copia propia del catálogo. Una ruta requiere
+la combinación exacta de fuente, canal, sección y tipo conocida. No usa
+subcadenas, distancia de edición ni semejanza de títulos. Los tipos no
 catalogados permanecen en las colecciones normalizadas por perfil y se reportan
 como `unmapped`. En tesis, la persona orientada es autor y tutor, cotutor o
 asesor se conserva como `authors.type = "advisor"`. Los cuatro destinos son

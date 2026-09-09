@@ -2,6 +2,7 @@ from copy import deepcopy
 import unittest
 
 import mongomock
+from kahi_impactu_type_catalog import get_impactu_catalog
 
 from yuku.scienti_entities import ENTITY_KEYS, ENTITY_NORMALIZER_VERSION, ENTITY_RUNS, _timestamp
 from yuku.scienti_entity_comparison import (
@@ -9,6 +10,9 @@ from yuku.scienti_entity_comparison import (
     ScientiEntityVersionComparator,
     _old_timestamp,
 )
+
+
+IMPACTU_CATALOG = get_impactu_catalog()
 
 
 class ScientiEntityVersionComparatorTests(unittest.TestCase):
@@ -230,8 +234,8 @@ class ScientiEntityVersionComparatorTests(unittest.TestCase):
                 {}, {"$set": {
                     "source_metadata.normalizer_version": ENTITY_NORMALIZER_VERSION,
                     "source_metadata.router_version": "scienti-exact-router-v5",
-                    "source_metadata.type_catalog_version": "1.0.0",
-                    "source_metadata.type_catalog_sha256": "659bee83ffe9cef7edb67b49e04f1ec650a0e79fbdbc3df0b06ec1164ab96406",
+                    "source_metadata.type_catalog_version": IMPACTU_CATALOG.version,
+                    "source_metadata.type_catalog_sha256": IMPACTU_CATALOG.source_sha256,
                 }}
             )
         route_fixtures = {
@@ -366,8 +370,8 @@ class ScientiEntityVersionComparatorTests(unittest.TestCase):
                 "source_metadata": {
                     "normalizer_version": ENTITY_NORMALIZER_VERSION,
                     "router_version": "scienti-exact-router-v5",
-                    "type_catalog_version": "1.0.0",
-                    "type_catalog_sha256": "659bee83ffe9cef7edb67b49e04f1ec650a0e79fbdbc3df0b06ec1164ab96406",
+                    "type_catalog_version": IMPACTU_CATALOG.version,
+                    "type_catalog_sha256": IMPACTU_CATALOG.source_sha256,
                     "family": "work",
                     "identity_rule": "source_scoped_insufficient_anchors",
                     "identity_key": "source|works|cvlac|0000000002|0|trabajo",
@@ -464,8 +468,8 @@ class ScientiEntityVersionComparatorTests(unittest.TestCase):
                 {"$set": {
                     "source_metadata.normalizer_version": ENTITY_NORMALIZER_VERSION,
                     "source_metadata.router_version": "scienti-exact-router-v5",
-                    "source_metadata.type_catalog_version": "1.0.0",
-                    "source_metadata.type_catalog_sha256": "659bee83ffe9cef7edb67b49e04f1ec650a0e79fbdbc3df0b06ec1164ab96406",
+                    "source_metadata.type_catalog_version": IMPACTU_CATALOG.version,
+                    "source_metadata.type_catalog_sha256": IMPACTU_CATALOG.source_sha256,
                 }},
             )
         self.db[self.new_destinations["projects"]].update_one(

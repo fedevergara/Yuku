@@ -1,0 +1,293 @@
+{
+  "contract_version": "scienti-kahi-ingestion-v1",
+  "status": "approved-development-baseline",
+  "observed_on": "2026-09-08",
+  "source": {
+    "database": "dam",
+    "read_only": true,
+    "publication_collection": "scienti_final_release_publications",
+    "audit_collection": "scienti_final_release_audits",
+    "release_name": "scienti_final_release_publishers_v11_20260902",
+    "audit_name": "scienti_final_release_publishers_v11_20260902_audit",
+    "required_publication_status": "published",
+    "required_audit_status": "passed",
+    "required_critical_anomalies": 0,
+    "collections": {
+      "works": {
+        "name": "scienti_works_final_publishers_v11_20260902",
+        "documents": 3837870
+      },
+      "projects": {
+        "name": "scienti_projects_final_v5_20260901",
+        "documents": 642519
+      },
+      "patents": {
+        "name": "scienti_patents_final_v5_20260901",
+        "documents": 9789
+      },
+      "events": {
+        "name": "scienti_events_final_v5_20260901",
+        "documents": 1466152
+      }
+    }
+  },
+  "import_policy": {
+    "resolve_release_once": true,
+    "allow_current_alias": false,
+    "mutate_source_database": false,
+    "stream_with_checkpoint": true,
+    "checkpoint_field": "_id",
+    "write_mode": "bounded_unordered_bulk_upsert",
+    "source_documents_are_pre_normalized": true,
+    "reparse_as_gruplac_production_data": false,
+    "allow_new_destination_fields": false,
+    "preserve_empty_author_ids": true,
+    "allow_name_only_author_resolution": false,
+    "unresolved_nonempty_references_are_critical": true
+  },
+  "six_entity_publication": {
+    "entities": [
+      "works",
+      "projects",
+      "patents",
+      "events",
+      "persons",
+      "affiliations"
+    ],
+    "base_release": "explicit_audited_four_entity_release",
+    "atomic_pointer": "scienti_final_release_publications.current",
+    "require_published_person_snapshot": true,
+    "require_published_affiliation_snapshot": true,
+    "direct_reference_validation": {
+      "entity_authors_to_persons": true,
+      "entity_groups_to_affiliations": true,
+      "person_affiliations_to_affiliations": true,
+      "person_related_dois_to_works": true
+    },
+    "source_quality": {
+      "exclude_invalid_work_doi_from_identity_evidence": true,
+      "report_excluded_invalid_work_doi": true
+    },
+    "allow_pointer_switch_with_critical_anomalies": false
+  },
+  "reference_resolution": {
+    "authors": {
+      "source_path": "authors.id",
+      "source_format": "ten_digit_cod_rh",
+      "target_collection": "person",
+      "target_path": "external_ids.id.COD_RH",
+      "replacement_path": "authors.id"
+    },
+    "groups": {
+      "source_path": "groups.id",
+      "source_format": "COL_group_code",
+      "target_collection": "affiliations",
+      "target_path": "external_ids.id",
+      "replacement_path": "groups.id"
+    },
+    "author_affiliation_evidence": {
+      "source_path": "authors.affiliations",
+      "fields": [
+        "institution",
+        "source",
+        "group_code",
+        "membership_period",
+        "product_in_group"
+      ],
+      "copy_as_kahi_affiliation": false,
+      "resolution": "group_code_then_unique_strict_institution_match"
+    }
+  },
+  "entities": {
+    "works": {
+      "destination": "works",
+      "fields": [
+        "_id",
+        "titles",
+        "updated",
+        "doi",
+        "abstracts",
+        "keywords",
+        "types",
+        "external_ids",
+        "external_urls",
+        "date_published",
+        "year_published",
+        "bibliographic_info",
+        "open_access",
+        "apc",
+        "references_count",
+        "references",
+        "citations_count",
+        "citations",
+        "author_count",
+        "authors",
+        "source",
+        "ranking",
+        "subjects",
+        "citations_by_year",
+        "groups",
+        "rights",
+        "primary_topic",
+        "topics"
+      ],
+      "source_only_fields": ["source_metadata", "authorship_status"],
+      "bibliographic_info_policy": {
+        "reuse_existing_destination_field": true,
+        "allow_new_top_level_fields": false,
+        "merge_only_nonempty_values": true,
+        "preserve_existing_nonempty_values": true,
+        "minciencias_evidence_path": "bibliographic_info.minciencias",
+        "compatibility_reference": "kahi_dev_062026.works"
+      }
+    },
+    "projects": {
+      "destination": "projects",
+      "fields": [
+        "_id",
+        "titles",
+        "updated",
+        "abstract",
+        "types",
+        "external_ids",
+        "external_urls",
+        "date_init",
+        "date_end",
+        "year_init",
+        "year_end",
+        "author_count",
+        "authors",
+        "ranking",
+        "groups"
+      ],
+      "source_only_fields": ["source_metadata"]
+    },
+    "patents": {
+      "destination": "patents",
+      "fields": [
+        "_id",
+        "titles",
+        "updated",
+        "types",
+        "external_ids",
+        "external_urls",
+        "author_count",
+        "authors",
+        "ranking",
+        "groups"
+      ],
+      "source_only_fields": ["source_metadata"]
+    },
+    "events": {
+      "destination": "events",
+      "fields": [
+        "_id",
+        "titles",
+        "updated",
+        "abstract",
+        "types",
+        "external_ids",
+        "external_urls",
+        "date_held",
+        "year_held",
+        "author_count",
+        "authors",
+        "ranking",
+        "groups"
+      ],
+      "source_only_fields": ["source_metadata"]
+    }
+  },
+  "planned_identity_entities": {
+    "persons": {
+      "target_collection_pattern": "scienti_persons_final_<run>",
+      "frozen_manifest_valid_ids": 437606,
+      "identity": "COD_RH",
+      "materializer_version": "scienti-persons-v2",
+      "identity_universe": {
+        "include_frozen_cvlac_manifest": true,
+        "include_valid_audited_gruplac_members": true,
+        "allow_name_only_identity": false
+      },
+      "source_collections": [
+        "frozen_cvlac_manifest",
+        "all_researchers",
+        "recognized_researchers",
+        "cvlac_data",
+        "audited_normalized_cvlac_snapshot",
+        "audited_normalized_gruplac_snapshot",
+        "published_scienti_affiliations_snapshot",
+        "published_final_entity_release"
+      ],
+      "required_parser_versions": {
+        "cvlac": "3.2.0",
+        "gruplac": "3.2.0"
+      },
+      "audit_collection": "scienti_person_materialization_audits",
+      "publication_collection": "scienti_person_publications",
+      "fields": [
+        "updated",
+        "full_name",
+        "first_names",
+        "last_names",
+        "initials",
+        "aliases",
+        "affiliations",
+        "keywords",
+        "external_ids",
+        "sex",
+        "marital_status",
+        "ranking",
+        "birthplace",
+        "birthdate",
+        "degrees",
+        "subjects",
+        "citations_count",
+        "products_count",
+        "related_works"
+      ],
+      "related_works": {
+        "allowed_source": "doi",
+        "required_fields": ["provenance", "source", "id"],
+        "optional_fields": ["author_count"],
+        "require_canonical_doi": true,
+        "exclude_and_report_invalid_doi": true,
+        "include_products_without_supported_identifier": false,
+        "include_title_or_full_product_metadata": false
+      },
+      "final_reference_policy": {
+        "scan_entities": ["works", "projects", "patents", "events"],
+        "reject_unresolved_nonempty_cod_rh": true,
+        "allow_name_only_identity": false
+      },
+      "sensitive_national_identifiers": "excluded_by_default"
+    },
+    "affiliations": {
+      "target_collection_pattern": "scienti_affiliations_final_<run>",
+      "expected_group_union_baseline": 9537,
+      "identity": "group_code_or_institution_evidence_key",
+      "materializer_version": "scienti-affiliations-v1",
+      "source_collections": ["recognized_groups", "gruplac_groups_data"],
+      "profile_enrichment_source": "audited_normalized_gruplac_snapshot",
+      "fields": [
+        "updated",
+        "names",
+        "aliases",
+        "abbreviations",
+        "types",
+        "year_established",
+        "status",
+        "relations",
+        "addresses",
+        "external_urls",
+        "external_ids",
+        "subjects",
+        "ranking",
+        "description"
+      ],
+      "institution_resolution_owner": "kahi",
+      "unresolved_institution_relation_id": "",
+      "synthetic_id_policy": "only_after_exact_and_strict_similarity_fail"
+    }
+  }
+}

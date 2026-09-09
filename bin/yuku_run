@@ -228,6 +228,64 @@ parser.add_argument('--audit_scienti_gruplac_normalization', action='store_true'
                     help='Audit GrupLAC coverage, normalization and incomplete verification')
 parser.add_argument('--scienti_gruplac_audit_name', default='gruplac_normalization_audit')
 parser.add_argument('--scienti_gruplac_audit_verification_run_name')
+parser.add_argument('--materialize_scienti_affiliations', action='store_true',
+                    help='Create, audit and atomically publish a Kahi-compatible ScienTI group snapshot')
+parser.add_argument('--scienti_affiliations_run_name',
+                    default='scienti_affiliations_v1')
+parser.add_argument('--scienti_affiliations_recognized_collection',
+                    default='recognized_groups')
+parser.add_argument('--scienti_affiliations_open_data_collection',
+                    default='gruplac_groups_data')
+parser.add_argument('--scienti_affiliations_gruplac_collection',
+                    default='gruplac_related_works')
+parser.add_argument('--scienti_affiliations_gruplac_audit_name',
+                    default='gruplac_normalization_audit')
+parser.add_argument('--scienti_affiliations_target_collection',
+                    default='scienti_affiliations_final_v1')
+parser.add_argument('--scienti_affiliations_batch_size', type=int, default=500)
+parser.add_argument('--scienti_affiliations_progress_every', type=int, default=1000)
+parser.add_argument('--scienti_affiliations_expected_groups', type=int, default=0)
+parser.add_argument('--materialize_scienti_persons', action='store_true',
+                    help='Create, audit and atomically publish enriched ScienTI people with DOI-only related works')
+parser.add_argument('--scienti_persons_run_name', default='scienti_persons_v1')
+parser.add_argument('--scienti_persons_manifest_run_name',
+                    default='cvlac_full_snapshot')
+parser.add_argument('--scienti_persons_manifest_collection',
+                    default='cvlac_full_snapshot_targets')
+parser.add_argument('--scienti_persons_directory_collection',
+                    default='all_researchers')
+parser.add_argument('--scienti_persons_recognized_collection',
+                    default='recognized_researchers')
+parser.add_argument('--scienti_persons_open_data_collection',
+                    default='cvlac_data')
+parser.add_argument('--scienti_persons_cvlac_collection',
+                    default='cvlac_related_works_full')
+parser.add_argument('--scienti_persons_cvlac_audit_name',
+                    default='cvlac_normalization_audit')
+parser.add_argument('--scienti_persons_gruplac_collection',
+                    default='gruplac_related_works')
+parser.add_argument('--scienti_persons_gruplac_audit_name',
+                    default='gruplac_normalization_audit')
+parser.add_argument('--scienti_persons_affiliation_run_name',
+                    default='scienti_affiliations_v1')
+parser.add_argument('--scienti_persons_affiliation_collection',
+                    default='scienti_affiliations_final_v1')
+parser.add_argument('--scienti_persons_final_release_name')
+parser.add_argument('--scienti_persons_final_release_audit_name')
+parser.add_argument('--scienti_persons_target_collection',
+                    default='scienti_persons_final_v1')
+parser.add_argument('--scienti_persons_batch_size', type=int, default=500)
+parser.add_argument('--scienti_persons_progress_every', type=int, default=10000)
+parser.add_argument('--scienti_persons_expected_people', type=int, default=0)
+parser.add_argument('--publish_scienti_kahi_release', action='store_true',
+                    help='Validate references and atomically publish six ScienTI entities for Kahi')
+parser.add_argument('--scienti_kahi_release_name')
+parser.add_argument('--scienti_kahi_base_release_name')
+parser.add_argument('--scienti_kahi_person_run_name')
+parser.add_argument('--scienti_kahi_affiliation_run_name')
+parser.add_argument('--scienti_kahi_release_audit_name', default='')
+parser.add_argument('--scienti_kahi_release_batch_size', type=int, default=1000)
+parser.add_argument('--scienti_kahi_release_progress_every', type=int, default=100000)
 parser.add_argument('--normalize_scienti_entities', action='store_true',
                     help='Normalize exact-routed theses, projects, patents and events into four Kahi-compatible collections')
 parser.add_argument('--scienti_entities_run_name', default='scienti_entities_v1')
@@ -653,6 +711,67 @@ if __name__ == '__main__':
             verification_run_name=args.scienti_gruplac_audit_verification_run_name,
             anomaly_example_limit=args.scienti_audit_example_limit,
         ))
+
+    if args.materialize_scienti_affiliations:
+        print(json.dumps(yuku.materialize_scienti_affiliations(
+            run_name=args.scienti_affiliations_run_name,
+            recognized_collection=args.scienti_affiliations_recognized_collection,
+            open_data_collection=args.scienti_affiliations_open_data_collection,
+            gruplac_collection=args.scienti_affiliations_gruplac_collection,
+            gruplac_audit_name=args.scienti_affiliations_gruplac_audit_name,
+            target_collection=args.scienti_affiliations_target_collection,
+            batch_size=args.scienti_affiliations_batch_size,
+            progress_every=args.scienti_affiliations_progress_every,
+            expected_groups=args.scienti_affiliations_expected_groups,
+        ), ensure_ascii=False, indent=2, default=str))
+
+    if args.materialize_scienti_persons:
+        if not args.scienti_persons_final_release_name or not args.scienti_persons_final_release_audit_name:
+            parser.error(
+                '--materialize_scienti_persons requires '
+                '--scienti_persons_final_release_name and '
+                '--scienti_persons_final_release_audit_name'
+            )
+        print(json.dumps(yuku.materialize_scienti_persons(
+            run_name=args.scienti_persons_run_name,
+            manifest_run_name=args.scienti_persons_manifest_run_name,
+            manifest_collection=args.scienti_persons_manifest_collection,
+            directory_collection=args.scienti_persons_directory_collection,
+            recognized_collection=args.scienti_persons_recognized_collection,
+            open_data_collection=args.scienti_persons_open_data_collection,
+            cvlac_collection=args.scienti_persons_cvlac_collection,
+            cvlac_audit_name=args.scienti_persons_cvlac_audit_name,
+            gruplac_collection=args.scienti_persons_gruplac_collection,
+            gruplac_audit_name=args.scienti_persons_gruplac_audit_name,
+            affiliation_run_name=args.scienti_persons_affiliation_run_name,
+            affiliation_collection=args.scienti_persons_affiliation_collection,
+            final_release_name=args.scienti_persons_final_release_name,
+            final_release_audit_name=args.scienti_persons_final_release_audit_name,
+            target_collection=args.scienti_persons_target_collection,
+            batch_size=args.scienti_persons_batch_size,
+            progress_every=args.scienti_persons_progress_every,
+            expected_people=args.scienti_persons_expected_people,
+        ), ensure_ascii=False, indent=2, default=str))
+
+    if args.publish_scienti_kahi_release:
+        required = {
+            '--scienti_kahi_release_name': args.scienti_kahi_release_name,
+            '--scienti_kahi_base_release_name': args.scienti_kahi_base_release_name,
+            '--scienti_kahi_person_run_name': args.scienti_kahi_person_run_name,
+            '--scienti_kahi_affiliation_run_name': args.scienti_kahi_affiliation_run_name,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            parser.error('--publish_scienti_kahi_release requires ' + ', '.join(missing))
+        print(json.dumps(yuku.publish_scienti_kahi_release(
+            release_name=args.scienti_kahi_release_name,
+            base_release_name=args.scienti_kahi_base_release_name,
+            person_run_name=args.scienti_kahi_person_run_name,
+            affiliation_run_name=args.scienti_kahi_affiliation_run_name,
+            audit_name=args.scienti_kahi_release_audit_name,
+            batch_size=args.scienti_kahi_release_batch_size,
+            progress_every=args.scienti_kahi_release_progress_every,
+        ), ensure_ascii=False, indent=2, default=str))
 
     if args.load_bibliographic_authorities_json:
         print(yuku.load_bibliographic_authorities_json(

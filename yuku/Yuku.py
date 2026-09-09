@@ -34,6 +34,8 @@ from yuku.scienti_auxiliary_audit import ScientiAuxiliarySemanticAudit
 from yuku.scienti_project_audit import ScientiProjectSemanticAudit
 from yuku.scienti_bibliographic_audit import ScientiBibliographicEnrichmentAuditor
 from yuku.scienti_release import ScientiFinalReleaseManager
+from yuku.scienti_affiliations import ScientiAffiliationMaterializer
+from yuku.scienti_persons import ScientiPersonMaterializer
 from yuku.scienti_pipeline import (
     ScientiFullPipeline,
     load_pipeline_config,
@@ -83,6 +85,78 @@ class Yuku:
     def scienti_pipeline_status(self, run_name: str):
         """Return compact per-stage status for a full Scienti pipeline."""
         return pipeline_status(self.db, run_name)
+
+    def materialize_scienti_affiliations(
+        self,
+        *,
+        run_name: str,
+        recognized_collection: str,
+        open_data_collection: str,
+        gruplac_collection: str,
+        gruplac_audit_name: str,
+        target_collection: str,
+        batch_size: int = 500,
+        progress_every: int = 1000,
+        expected_groups: int = 0,
+    ):
+        """Create and atomically publish an audited ScienTI group snapshot."""
+        return ScientiAffiliationMaterializer(
+            self.db,
+            run_name=run_name,
+            recognized_collection=recognized_collection,
+            open_data_collection=open_data_collection,
+            gruplac_collection=gruplac_collection,
+            gruplac_audit_name=gruplac_audit_name,
+            target_collection=target_collection,
+            batch_size=batch_size,
+            progress_every=progress_every,
+            expected_groups=expected_groups,
+        ).run()
+
+    def materialize_scienti_persons(
+        self,
+        *,
+        run_name: str,
+        manifest_run_name: str,
+        manifest_collection: str,
+        directory_collection: str,
+        recognized_collection: str,
+        open_data_collection: str,
+        cvlac_collection: str,
+        cvlac_audit_name: str,
+        gruplac_collection: str,
+        gruplac_audit_name: str,
+        affiliation_run_name: str,
+        affiliation_collection: str,
+        final_release_name: str,
+        final_release_audit_name: str,
+        target_collection: str,
+        batch_size: int = 500,
+        progress_every: int = 10000,
+        expected_people: int = 0,
+    ):
+        """Create and publish an audited DOI-only ScienTI person snapshot."""
+        return ScientiPersonMaterializer(
+            self.db,
+            run_name=run_name,
+            manifest_run_name=manifest_run_name,
+            manifest_collection=manifest_collection,
+            directory_collection=directory_collection,
+            recognized_collection=recognized_collection,
+            open_data_collection=open_data_collection,
+            cvlac_collection=cvlac_collection,
+            cvlac_audit_name=cvlac_audit_name,
+            gruplac_collection=gruplac_collection,
+            gruplac_audit_name=gruplac_audit_name,
+            affiliation_run_name=affiliation_run_name,
+            affiliation_collection=affiliation_collection,
+            final_release_name=final_release_name,
+            final_release_audit_name=final_release_audit_name,
+            target_collection=target_collection,
+            batch_size=batch_size,
+            progress_every=progress_every,
+            expected_people=expected_people,
+        ).run()
 
     def cvlav_private_profile(self, soup: BeautifulSoup):
         """
@@ -838,6 +912,28 @@ class Yuku:
             collections=collections,
             materialization_runs=materialization_runs,
             audit_name=audit_name,
+        )
+
+    def publish_scienti_kahi_release(
+        self,
+        *,
+        release_name: str,
+        base_release_name: str,
+        person_run_name: str,
+        affiliation_run_name: str,
+        audit_name: str = "",
+        batch_size: int = 1000,
+        progress_every: int = 100000,
+    ):
+        """Validate references and atomically publish six Kahi entities."""
+        return ScientiFinalReleaseManager(self.db).publish_with_identities(
+            release_name=release_name,
+            base_release_name=base_release_name,
+            person_run_name=person_run_name,
+            affiliation_run_name=affiliation_run_name,
+            audit_name=audit_name,
+            batch_size=batch_size,
+            progress_every=progress_every,
         )
 
     def audit_scienti_bibliographic_enrichment(

@@ -507,7 +507,7 @@ class CvlacNormalizationRun:
         }
 
         def flush_documents() -> None:
-            nonlocal failures, processed, pending_documents
+            nonlocal failures, processed
             while len(pending_documents) >= self.batch_size:
                 batch = pending_documents[: self.batch_size]
                 del pending_documents[: self.batch_size]

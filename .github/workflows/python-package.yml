@@ -18,15 +18,17 @@ jobs:
         python-version: ['3.10', 3.11, 3.12]
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install flake8 pytest setuptools
+        pip install flake8 pytest setuptools mongomock
+        # Remove this source pin after Kahi_impactu_type_catalog 0.1.0 is on PyPI.
+        pip install "Kahi-impactu-type-catalog @ git+https://github.com/fedevergara/Kahi_plugins.git@330d466c91766556f48509d79484de7bfb20da8a#subdirectory=Kahi_impactu_type_catalog"
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
     - name: Lint with flake8
       run: |
@@ -36,5 +38,5 @@ jobs:
         flake8 . --count --ignore=C901 --exit-zero --max-complexity=10 --max-line-length=200 --statistics
     - name: Test with pytest
       run: |
-        python setup.py develop --user
-        #pytest # not implemented yet
+        python -m pip install --editable .
+        pytest -q

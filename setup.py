@@ -65,6 +65,7 @@ def main():
 
         # Include additional files into the package
         include_package_data=True,
+        exclude_package_data={"": ["*.json", "*.pyc", "__pycache__/*"]},
 
         # Details
         url="https://github.com/colav/Yuku",
@@ -86,7 +87,9 @@ def main():
             'requests>=2.22.0',
             'sodapy',
             'beautifulsoup4',
-            'lxml'
+            'lxml',
+            'openpyxl',
+            'Kahi_impactu_type_catalog==0.1.0',
         ],
     )
 

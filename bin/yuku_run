@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+import os
+import sys
+import json
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from yuku.Yuku import Yuku
 from pymongo import MongoClient
 import argparse
@@ -20,14 +26,28 @@ parser.add_argument('--search_limit', type=int, default=5,
                           using elastic search, return number of elements indicated in --search_limit, by default it is 5')
 parser.add_argument('--drop_mongodb', action='store_true',
                     help='delete the database, use it with careful, deletes everything!')
+parser.add_argument('--run_scienti_pipeline', metavar='CONFIG_JSON',
+                    help='Run or resume the complete ordered Scienti pipeline from a JSON configuration')
+parser.add_argument('--scienti_pipeline_status', metavar='RUN_NAME',
+                    help='Show the stage status of a complete Scienti pipeline run')
+parser.add_argument('--scienti_pipeline_from_stage', default='',
+                    help='Start a configured full pipeline at this already-unblocked stage')
+parser.add_argument('--scienti_pipeline_to_stage', default='',
+                    help='Stop a configured full pipeline after this stage')
+parser.add_argument('--scienti_pipeline_dry_run', action='store_true',
+                    help='Validate and display a full pipeline plan without processing data')
 parser.add_argument('--download_cvlac', type=str,
                     help='Download cvlac data for given dataset id')
 parser.add_argument('--download_cvlac_profiles', action='store_true',
-                    help='Download cvlac profiles taking ids from gruplac_production_data collection and perform scrapping from public profiles in mincienias')
+                    help='LEGACY: old CVLAC scraper; requires --allow_legacy_cvlac_scraper')
+parser.add_argument('--allow_legacy_cvlac_scraper', action='store_true',
+                    help='Explicitly opt into the deprecated pre-snapshot CVLAC scraper')
 parser.add_argument('--download_cvlac_profiles_use_raw', action="store_true",
                     help='parse cvlac profiles taking html already downloaded')
 parser.add_argument('--download_cvlac_profiles_max_tries', type=int, default=2,
                     help='max tries to download profiles in the scrapping process')
+parser.add_argument('--download_cvlac_profiles_skip_works', action='store_true',
+                    help='Do not build cvlac_works automatically after CVLAC profile processing')
 parser.add_argument('--download_gruplac_production', type=str,
                     help='Download gruplac production data for given dataset id')
 parser.add_argument('--download_gruplac_groups', type=str,
@@ -40,6 +60,301 @@ parser.add_argument('--delay', type=float, default=0.3,
                     help='delay between requests, default 0.3 seconds')
 parser.add_argument('--download_publindex', action='store_true',
                     help='Download Publindex dataset into MongoDB using existing download()')
+parser.add_argument('--create_cvlac_works', action='store_true',
+                    help='Create a graph-unified dehydrated works collection from raw CVLAC HTML')
+parser.add_argument('--cvlac_works_collection', type=str, default='cvlac_works',
+                    help='Destination collection for unified CVLAC works')
+parser.add_argument('--cvlac_works_source_collection', type=str,
+                    default='cvlac_stage_raw',
+                    help='Source raw HTML collection for unified CVLAC works')
+parser.add_argument('--cvlac_works_group_source_collection', type=str,
+                    help='Optional normalized GrupLAC collection to include in the work graph')
+parser.add_argument('--bibliographic_authorities_collection', type=str,
+                    default='minciencias_bibliographic_authorities')
+parser.add_argument('--load_bibliographic_authorities_json', type=str,
+                    help='Load verified bibliographic authorship evidence from JSON')
+parser.add_argument('--cvlac_works_profile_ids', type=str,
+                    help='Comma-separated CVLAC ids to include; by default all profiles are processed')
+parser.add_argument('--cvlac_works_no_replace', action='store_true',
+                    help='Fail if the unified CVLAC works destination already exists')
+parser.add_argument('--cvlac_works_batch_size', type=int, default=500,
+                    help='MongoDB read/write batch size for unified CVLAC works')
+parser.add_argument('--cvlac_works_max_title_group_size', type=int, default=250,
+                    help='Maximum exact title/year candidate group to resolve automatically')
+parser.add_argument('--create_cvlac_related_works', action='store_true',
+                    help='Create normalized CVLAC related works collection with production and patents')
+parser.add_argument('--cvlac_related_works_collection', type=str,
+                    default='cvlac_related_works',
+                    help='Destination collection for --create_cvlac_related_works')
+parser.add_argument('--cvlac_related_works_source_collection', type=str,
+                    default='cvlac_stage_raw',
+                    help='Source raw HTML collection for --create_cvlac_related_works')
+parser.add_argument('--cvlac_related_works_profile_ids', type=str,
+                    help='Comma-separated CVLAC ids to process. By default all ids in source collection are processed')
+parser.add_argument('--cvlac_related_works_download_missing', action='store_true',
+                    help='Download profiles missing from source collection while creating related works')
+parser.add_argument('--cvlac_related_works_no_replace', action='store_true',
+                    help='Do not replace existing documents in destination collection')
+parser.add_argument('--cvlac_related_works_resume', action='store_true',
+                    help='Skip profiles already present in the related works destination')
+parser.add_argument('--cvlac_related_works_distribution', action='store_true',
+                    help='Compute type_impactu distribution for a normalized CVLAC related works collection')
+parser.add_argument('--cvlac_related_works_distribution_output_collection', type=str,
+                    help='Optional collection to store --cvlac_related_works_distribution results')
+parser.add_argument('--download_all_researchers', action='store_true',
+                    help='Download the complete public Scienti researcher directory into all_researchers')
+parser.add_argument('--all_researchers_collection', default='all_researchers')
+parser.add_argument('--all_researchers_pages_collection',
+                    default='scienti_researcher_directory_pages')
+parser.add_argument('--all_researchers_limit_pages', type=int, default=0,
+                    help='Controlled page limit; 0 downloads all directory pages')
+parser.add_argument('--recognize_researchers_json', type=str,
+                    help='Historical investigadores.json to resolve into recognized_researchers')
+parser.add_argument('--recognize_groups_json', type=str,
+                    help='Historical grupos.json to resolve into recognized_groups')
+parser.add_argument('--recognized_researchers_collection', default='recognized_researchers')
+parser.add_argument('--recognized_groups_collection', default='recognized_groups')
+parser.add_argument('--download_scienti_cvlac_profiles', action='store_true',
+                    help='Download the union of known COD_RH profiles with checkpoints')
+parser.add_argument('--download_scienti_cvlac_priority_snapshot', action='store_true',
+                    help='Freeze and download only strong priority COD_RH profiles')
+parser.add_argument('--scienti_priority_run_name', default='cvlac_priority_snapshot')
+parser.add_argument('--scienti_priority_reference_collection', default='cvlac_stage_raw')
+parser.add_argument('--scienti_priority_raw_collection', default='cvlac_stage_raw_priority')
+parser.add_argument('--scienti_priority_max_passes', type=int, default=3)
+parser.add_argument('--download_scienti_cvlac_full_snapshot', action='store_true',
+                    help='Download directory and strong COD_RH ids, reusing a versioned raw snapshot')
+parser.add_argument('--scienti_full_run_name', default='cvlac_full_snapshot')
+parser.add_argument('--scienti_full_seed_collection', default='cvlac_stage_raw_priority')
+parser.add_argument('--scienti_full_raw_collection', default='cvlac_stage_raw_full')
+parser.add_argument('--scienti_full_max_passes', type=int, default=3)
+parser.add_argument('--scienti_full_no_seed_copy', action='store_true',
+                    help='Download every full-manifest profile without copying the seed HTML')
+parser.add_argument('--scienti_fallback_requests_per_second', type=float)
+parser.add_argument('--scienti_fallback_after_errors', type=int, default=5)
+parser.add_argument('--normalize_scienti_cvlac_snapshot', action='store_true',
+                    help='Normalize a frozen complete CVLAC snapshot with versioned provenance and resume')
+parser.add_argument('--scienti_normalization_run_name', default='cvlac_normalization_full')
+parser.add_argument('--scienti_normalization_source_run_name', default='cvlac_full_snapshot')
+parser.add_argument('--scienti_normalization_source_state_collection')
+parser.add_argument('--scienti_normalization_collection', default='cvlac_related_works_full')
+parser.add_argument('--scienti_normalization_batch_size', type=int, default=25)
+parser.add_argument('--scienti_normalization_progress_every', type=int, default=100)
+parser.add_argument('--scienti_normalization_workers', type=int, default=1,
+                    help='CPU worker processes used only for CVLAC HTML parsing')
+parser.add_argument('--audit_scienti_cvlac_normalization', action='store_true',
+                    help='Audit normalized CVLAC coverage, provenance and metadata')
+parser.add_argument('--scienti_cvlac_audit_name', default='cvlac_normalization_audit')
+parser.add_argument('--scienti_audit_progress_every', type=int, default=1000)
+parser.add_argument('--scienti_audit_example_limit', type=int, default=100)
+parser.add_argument('--create_scienti_full_graph', action='store_true',
+                    help='Build and atomically publish the checkpointed graph from audited normalized CVLAC and GrupLAC')
+parser.add_argument('--scienti_full_graph_run_name', default='scienti_full_graph')
+parser.add_argument('--scienti_full_graph_collection', default='cvlac_works_graph_full')
+parser.add_argument('--scienti_full_cvlac_related_collection',
+                    default='cvlac_related_works_full')
+parser.add_argument('--scienti_full_cvlac_audit_name',
+                    default='cvlac_normalization_audit')
+parser.add_argument('--scienti_full_gruplac_raw_collection', default='gruplac_stage_raw')
+parser.add_argument('--scienti_full_gruplac_related_collection', default='gruplac_related_works')
+parser.add_argument('--scienti_full_gruplac_audit_name',
+                    default='gruplac_normalization_audit')
+parser.add_argument('--scienti_full_graph_partitions', type=int, default=64,
+                    help='Deterministic title/year partitions with resumable checkpoints, default 64')
+parser.add_argument('--normalize_minciencias_measured_products', action='store_true',
+                    help='Normalize gruplac_production_data into Kahi-compatible official measured products')
+parser.add_argument('--link_minciencias_measured_products', action='store_true',
+                    help='Create conservative, audited links from official products to a scraped graph')
+parser.add_argument('--materialize_minciencias_enriched_graph', action='store_true',
+                    help='Publish a full scraped graph copy enriched with linked official measurements')
+parser.add_argument('--minciencias_measurement_run_name',
+                    default='minciencias_measurements_v1',
+                    help='Base run name; stage suffixes are added automatically')
+parser.add_argument('--minciencias_measurement_source_collection',
+                    default='gruplac_production_data')
+parser.add_argument('--minciencias_measured_products_collection',
+                    default='minciencias_measured_products')
+parser.add_argument('--minciencias_measurement_links_collection',
+                    default='minciencias_measured_product_links')
+parser.add_argument('--minciencias_measurement_graph_collection', default='',
+                    help='Scraped graph source; empty uses the current published graph')
+parser.add_argument('--minciencias_enriched_graph_collection',
+                    default='cvlac_works_graph_full_measurements_v1')
+parser.add_argument('--minciencias_measurement_batch_size', type=int, default=500)
+parser.add_argument('--minciencias_measurement_progress_every', type=int, default=10000)
+parser.add_argument('--minciencias_measurement_max_candidates', type=int, default=100)
+parser.add_argument('--minciencias_measurement_limit', type=int, default=0,
+                    help='Controlled product limit; 0 processes the complete collection')
+parser.add_argument('--minciencias_measurement_replace', action='store_true',
+                    help='Replace only the named measurement-stage destination and run state')
+parser.add_argument('--evaluate_scienti_cvlac_profiles', action='store_true',
+                    help='Run an isolated deterministic CVLAC download/update evaluation')
+parser.add_argument('--compare_scienti_cvlac_evaluation', action='store_true',
+                    help='Compare old and refreshed normalized metadata from an evaluation')
+parser.add_argument('--scienti_evaluation_name', default='cvlac_eval_1000')
+parser.add_argument('--scienti_evaluation_reference_collection', default='cvlac_stage_raw')
+parser.add_argument('--scienti_evaluation_new_count', type=int, default=500)
+parser.add_argument('--scienti_evaluation_refresh_count', type=int, default=500)
+parser.add_argument('--scienti_evaluation_seed', default='yuku-cvlac-evaluation-v1')
+parser.add_argument('--download_scienti_gruplac_profiles', action='store_true',
+                    help='Download recognized GrupLAC profiles with checkpoints')
+parser.add_argument('--scienti_workers', type=int, default=4)
+parser.add_argument('--scienti_requests_per_second', type=float, default=2.0)
+parser.add_argument('--scienti_limit', type=int, default=0)
+parser.add_argument('--scienti_offset', type=int, default=0)
+parser.add_argument('--scienti_refresh', action='store_true')
+parser.add_argument('--scienti_refresh_days', type=int)
+parser.add_argument('--cvlac_raw_collection', default='cvlac_stage_raw')
+parser.add_argument('--gruplac_raw_collection', default='gruplac_stage_raw')
+parser.add_argument('--gruplac_download_state_collection',
+                    default='scienti_profile_downloads')
+parser.add_argument('--verify_scienti_gruplac_incomplete', action='store_true')
+parser.add_argument('--gruplac_verification_run_name', default='gruplac_incomplete_verification')
+parser.add_argument('--gruplac_verification_source_raw_collection',
+                    default='gruplac_stage_raw')
+parser.add_argument('--gruplac_verification_source_state_collection',
+                    default='scienti_profile_downloads')
+parser.add_argument('--gruplac_verification_normalized_collection',
+                    default='gruplac_related_works')
+parser.add_argument('--create_gruplac_related_works', action='store_true')
+parser.add_argument('--gruplac_related_works_collection', default='gruplac_related_works')
+parser.add_argument('--normalize_scienti_gruplac_snapshot', action='store_true',
+                    help='Normalize frozen GrupLAC HTML with versioned provenance and parallel resume')
+parser.add_argument('--scienti_gruplac_normalization_run_name',
+                    default='gruplac_normalization_full')
+parser.add_argument('--scienti_gruplac_normalization_workers', type=int, default=1)
+parser.add_argument('--scienti_gruplac_normalization_progress_every', type=int, default=50)
+parser.add_argument('--audit_scienti_gruplac_normalization', action='store_true',
+                    help='Audit GrupLAC coverage, normalization and incomplete verification')
+parser.add_argument('--scienti_gruplac_audit_name', default='gruplac_normalization_audit')
+parser.add_argument('--scienti_gruplac_audit_verification_run_name')
+parser.add_argument('--materialize_scienti_affiliations', action='store_true',
+                    help='Create, audit and atomically publish a Kahi-compatible ScienTI group snapshot')
+parser.add_argument('--scienti_affiliations_run_name',
+                    default='scienti_affiliations_v1')
+parser.add_argument('--scienti_affiliations_recognized_collection',
+                    default='recognized_groups')
+parser.add_argument('--scienti_affiliations_open_data_collection',
+                    default='gruplac_groups_data')
+parser.add_argument('--scienti_affiliations_gruplac_collection',
+                    default='gruplac_related_works')
+parser.add_argument('--scienti_affiliations_gruplac_audit_name',
+                    default='gruplac_normalization_audit')
+parser.add_argument('--scienti_affiliations_target_collection',
+                    default='scienti_affiliations_final_v1')
+parser.add_argument('--scienti_affiliations_batch_size', type=int, default=500)
+parser.add_argument('--scienti_affiliations_progress_every', type=int, default=1000)
+parser.add_argument('--scienti_affiliations_expected_groups', type=int, default=0)
+parser.add_argument('--materialize_scienti_persons', action='store_true',
+                    help='Create, audit and atomically publish enriched ScienTI people with DOI-only related works')
+parser.add_argument('--scienti_persons_run_name', default='scienti_persons_v1')
+parser.add_argument('--scienti_persons_manifest_run_name',
+                    default='cvlac_full_snapshot')
+parser.add_argument('--scienti_persons_manifest_collection',
+                    default='cvlac_full_snapshot_targets')
+parser.add_argument('--scienti_persons_directory_collection',
+                    default='all_researchers')
+parser.add_argument('--scienti_persons_recognized_collection',
+                    default='recognized_researchers')
+parser.add_argument('--scienti_persons_open_data_collection',
+                    default='cvlac_data')
+parser.add_argument('--scienti_persons_cvlac_collection',
+                    default='cvlac_related_works_full')
+parser.add_argument('--scienti_persons_cvlac_audit_name',
+                    default='cvlac_normalization_audit')
+parser.add_argument('--scienti_persons_gruplac_collection',
+                    default='gruplac_related_works')
+parser.add_argument('--scienti_persons_gruplac_audit_name',
+                    default='gruplac_normalization_audit')
+parser.add_argument('--scienti_persons_affiliation_run_name',
+                    default='scienti_affiliations_v1')
+parser.add_argument('--scienti_persons_affiliation_collection',
+                    default='scienti_affiliations_final_v1')
+parser.add_argument('--scienti_persons_final_release_name')
+parser.add_argument('--scienti_persons_final_release_audit_name')
+parser.add_argument('--scienti_persons_target_collection',
+                    default='scienti_persons_final_v1')
+parser.add_argument('--scienti_persons_batch_size', type=int, default=500)
+parser.add_argument('--scienti_persons_progress_every', type=int, default=10000)
+parser.add_argument('--scienti_persons_expected_people', type=int, default=0)
+parser.add_argument('--publish_scienti_kahi_release', action='store_true',
+                    help='Validate references and atomically publish six ScienTI entities for Kahi')
+parser.add_argument('--scienti_kahi_release_name')
+parser.add_argument('--scienti_kahi_base_release_name')
+parser.add_argument('--scienti_kahi_person_run_name')
+parser.add_argument('--scienti_kahi_affiliation_run_name')
+parser.add_argument('--scienti_kahi_release_audit_name', default='')
+parser.add_argument('--scienti_kahi_release_batch_size', type=int, default=1000)
+parser.add_argument('--scienti_kahi_release_progress_every', type=int, default=100000)
+parser.add_argument('--normalize_scienti_entities', action='store_true',
+                    help='Normalize exact-routed theses, projects, patents and events into four Kahi-compatible collections')
+parser.add_argument('--scienti_entities_run_name', default='scienti_entities_v1')
+parser.add_argument('--scienti_entities_cvlac_collection',
+                    default='cvlac_related_works_full')
+parser.add_argument('--scienti_entities_gruplac_collection',
+                    default='gruplac_related_works')
+parser.add_argument('--scienti_entities_works_collection',
+                    default='scienti_works_normalized_v1')
+parser.add_argument('--scienti_entities_projects_collection',
+                    default='scienti_projects_normalized_v1')
+parser.add_argument('--scienti_entities_patents_collection',
+                    default='scienti_patents_normalized_v1')
+parser.add_argument('--scienti_entities_events_collection',
+                    default='scienti_events_normalized_v1')
+parser.add_argument('--scienti_entities_batch_size', type=int, default=500)
+parser.add_argument('--scienti_entities_progress_every', type=int, default=1000)
+parser.add_argument('--scienti_entities_limit_sources', type=int, default=0,
+                    help='Controlled source-document limit per CVLAC/GrupLAC collection; 0 processes all')
+parser.add_argument('--scienti_entities_replace', action='store_true',
+                    help='Drop only the four named entity destinations and restart this run')
+parser.add_argument('--create_scienti_entity_graph', action='store_true',
+                    help='Build an exact conservative graph for normalized projects or patents')
+parser.add_argument('--scienti_entity_graph_entity', choices=('projects', 'patents'))
+parser.add_argument('--scienti_entity_graph_run_name', default='scienti_entity_graph_v1')
+parser.add_argument('--scienti_entity_graph_source_collection')
+parser.add_argument('--scienti_entity_graph_target_collection')
+parser.add_argument('--scienti_entity_graph_entity_run_name', default='')
+parser.add_argument('--scienti_entity_graph_batch_size', type=int, default=1000)
+parser.add_argument('--scienti_entity_graph_progress_every', type=int, default=10000)
+parser.add_argument('--scienti_entity_graph_max_candidate_group', type=int, default=100)
+parser.add_argument('--scienti_entity_graph_replace', action='store_true',
+                    help='Replace only the explicitly named graph target and this graph run')
+parser.add_argument('--audit_scienti_projects_semantics', action='store_true',
+                    help='Run a resumable, read-only semantic audit over normalized projects')
+parser.add_argument('--scienti_projects_audit_name', default='scienti_projects_semantic_audit_v1')
+parser.add_argument('--scienti_projects_audit_collection',
+                    default='scienti_projects_normalized_v1')
+parser.add_argument('--scienti_projects_audit_entity_run_name',
+                    default='scienti_entities_v1')
+parser.add_argument('--scienti_projects_audit_progress_every', type=int, default=10000)
+parser.add_argument('--scienti_projects_audit_batch_size', type=int, default=2000)
+parser.add_argument('--scienti_projects_audit_example_limit', type=int, default=100)
+parser.add_argument('--compare_scienti_entity_versions', action='store_true',
+                    help='Exhaustively compare two completed strict entity normalization runs')
+parser.add_argument('--scienti_entity_comparison_name',
+                    default='scienti_entity_version_comparison')
+parser.add_argument('--scienti_entity_comparison_old_run', default='scienti_entities_v1')
+parser.add_argument('--scienti_entity_comparison_new_run', default='scienti_entities_v2')
+parser.add_argument('--scienti_entity_comparison_progress_every', type=int, default=10000)
+parser.add_argument('--scienti_entity_comparison_batch_size', type=int, default=1000)
+parser.add_argument('--scienti_entity_comparison_example_limit', type=int, default=100)
+parser.add_argument('--publish_scienti_entities', action='store_true',
+                    help='Atomically publish a fully compared and audited entity run')
+parser.add_argument('--scienti_entity_publication_run_name')
+parser.add_argument('--scienti_entity_publication_comparison_name')
+parser.add_argument('--scienti_entity_publication_project_audit_name')
+parser.add_argument('--scienti_entity_publication_works_audit_name')
+parser.add_argument('--scienti_entity_publication_patents_audit_name')
+parser.add_argument('--scienti_entity_publication_events_audit_name')
+parser.add_argument('--audit_scienti_auxiliary_semantics', action='store_true',
+                    help='Run a specialized semantic audit for works, patents or events')
+parser.add_argument('--scienti_auxiliary_audit_name', default='scienti_auxiliary_semantic_audit')
+parser.add_argument('--scienti_auxiliary_audit_entity', choices=('works', 'patents', 'events'))
+parser.add_argument('--scienti_auxiliary_audit_collection')
+parser.add_argument('--scienti_auxiliary_audit_entity_run_name', default='scienti_entities_v1')
+parser.add_argument('--scienti_auxiliary_audit_progress_every', type=int, default=10000)
+parser.add_argument('--scienti_auxiliary_audit_batch_size', type=int, default=2000)
+parser.add_argument('--scienti_auxiliary_audit_example_limit', type=int, default=100)
 
 if __name__ == '__main__':
     args = parser.parse_args()
@@ -48,6 +363,25 @@ if __name__ == '__main__':
     
     if args.drop_mongodb:
         MongoClient(args.mongo_dburi).drop_database(args.mongo_dbname)
+    if args.scienti_pipeline_status:
+        print(json.dumps(
+            yuku.scienti_pipeline_status(args.scienti_pipeline_status),
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ))
+    if args.run_scienti_pipeline:
+        print(json.dumps(
+            yuku.run_scienti_pipeline(
+                args.run_scienti_pipeline,
+                from_stage=args.scienti_pipeline_from_stage,
+                to_stage=args.scienti_pipeline_to_stage,
+                dry_run=args.scienti_pipeline_dry_run,
+            ),
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        ))
     if args.search is not None:
         yuku.search(args.search, args.search_limit)
 
@@ -61,7 +395,21 @@ if __name__ == '__main__':
         yuku.download_gruplac_groups(args.download_gruplac_groups)
 
     if args.download_cvlac_profiles:
-        yuku.download_cvlac_profile(args.download_cvlac_profiles_use_raw, args.download_cvlac_profiles_max_tries)
+        if not args.allow_legacy_cvlac_scraper:
+            parser.error(
+                '--download_cvlac_profiles is deprecated; use the Scienti '
+                'snapshot pipeline or explicitly pass --allow_legacy_cvlac_scraper'
+            )
+        yuku.download_cvlac_profile(
+            use_raw=args.download_cvlac_profiles_use_raw,
+            max_tries=args.download_cvlac_profiles_max_tries,
+            create_works=not args.download_cvlac_profiles_skip_works,
+            works_collection=args.cvlac_works_collection,
+            works_source_collection=args.cvlac_works_source_collection,
+            works_replace=not args.cvlac_works_no_replace,
+            works_batch_size=args.cvlac_works_batch_size,
+            works_max_title_group_size=args.cvlac_works_max_title_group_size,
+        )
 
     if args.download is not None:
         if args.download_collection is None:
@@ -72,3 +420,414 @@ if __name__ == '__main__':
     if args.download_publindex:
         # Use generic download() to store dataset into MongoDB under 'publindex' collection
         yuku.download('mwmn-inyg', 'publindex')
+
+    if args.download_all_researchers:
+        print(yuku.download_all_researchers_directory(
+            collection=args.all_researchers_collection,
+            pages_collection=args.all_researchers_pages_collection,
+            workers=args.scienti_workers,
+            requests_per_second=args.scienti_requests_per_second,
+            limit_pages=args.all_researchers_limit_pages,
+            refresh=args.scienti_refresh,
+        ))
+
+    if args.recognize_researchers_json:
+        print(yuku.recognize_researchers_json(
+            args.recognize_researchers_json,
+            collection=args.recognized_researchers_collection,
+            offset=args.scienti_offset,
+            limit=args.scienti_limit,
+            refresh=args.scienti_refresh,
+            delay=args.delay,
+        ))
+
+    if args.recognize_groups_json:
+        print(yuku.recognize_groups_json(
+            args.recognize_groups_json,
+            collection=args.recognized_groups_collection,
+            offset=args.scienti_offset,
+            limit=args.scienti_limit,
+            refresh=args.scienti_refresh,
+            delay=args.delay,
+        ))
+
+    if args.download_scienti_cvlac_profiles:
+        print(yuku.download_scienti_cvlac_profiles(
+            raw_collection=args.cvlac_raw_collection,
+            workers=args.scienti_workers,
+            requests_per_second=args.scienti_requests_per_second,
+            limit=args.scienti_limit,
+            refresh_days=args.scienti_refresh_days,
+        ))
+
+    if args.download_scienti_cvlac_priority_snapshot:
+        print(yuku.download_scienti_cvlac_priority_snapshot(
+            run_name=args.scienti_priority_run_name,
+            reference_collection=args.scienti_priority_reference_collection,
+            raw_collection=args.scienti_priority_raw_collection,
+            workers=args.scienti_workers,
+            requests_per_second=args.scienti_requests_per_second,
+            max_passes=args.scienti_priority_max_passes,
+        ))
+
+    if args.download_scienti_cvlac_full_snapshot:
+        print(yuku.download_scienti_cvlac_full_snapshot(
+            run_name=args.scienti_full_run_name,
+            seed_collection=args.scienti_full_seed_collection,
+            raw_collection=args.scienti_full_raw_collection,
+            workers=args.scienti_workers,
+            requests_per_second=args.scienti_requests_per_second,
+            max_passes=args.scienti_full_max_passes,
+            copy_seed=not args.scienti_full_no_seed_copy,
+            fallback_requests_per_second=args.scienti_fallback_requests_per_second,
+            fallback_after_errors=args.scienti_fallback_after_errors,
+        ))
+
+    if args.normalize_scienti_cvlac_snapshot:
+        print(yuku.normalize_scienti_cvlac_snapshot(
+            run_name=args.scienti_normalization_run_name,
+            source_snapshot_run_name=args.scienti_normalization_source_run_name,
+            destination_collection=args.scienti_normalization_collection,
+            source_state_collection=args.scienti_normalization_source_state_collection,
+            batch_size=args.scienti_normalization_batch_size,
+            progress_every=args.scienti_normalization_progress_every,
+            workers=args.scienti_normalization_workers,
+        ))
+
+    if args.audit_scienti_cvlac_normalization:
+        print(yuku.audit_scienti_cvlac_normalization(
+            audit_name=args.scienti_cvlac_audit_name,
+            normalization_run_name=args.scienti_normalization_run_name,
+            progress_every=args.scienti_audit_progress_every,
+            anomaly_example_limit=args.scienti_audit_example_limit,
+        ))
+
+    if args.normalize_scienti_entities:
+        print(json.dumps(yuku.normalize_scienti_entities(
+            run_name=args.scienti_entities_run_name,
+            cvlac_collection=args.scienti_entities_cvlac_collection,
+            gruplac_collection=args.scienti_entities_gruplac_collection,
+            works_collection=args.scienti_entities_works_collection,
+            projects_collection=args.scienti_entities_projects_collection,
+            patents_collection=args.scienti_entities_patents_collection,
+            events_collection=args.scienti_entities_events_collection,
+            batch_size=args.scienti_entities_batch_size,
+            progress_every=args.scienti_entities_progress_every,
+            replace=args.scienti_entities_replace,
+            limit_sources=args.scienti_entities_limit_sources,
+        ), ensure_ascii=False, indent=2, default=str))
+
+    if args.create_scienti_entity_graph:
+        required = {
+            '--scienti_entity_graph_entity': args.scienti_entity_graph_entity,
+            '--scienti_entity_graph_source_collection': args.scienti_entity_graph_source_collection,
+            '--scienti_entity_graph_target_collection': args.scienti_entity_graph_target_collection,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            parser.error('--create_scienti_entity_graph requires ' + ', '.join(missing))
+        print(json.dumps(yuku.create_scienti_entity_graph(
+            entity=args.scienti_entity_graph_entity,
+            run_name=args.scienti_entity_graph_run_name,
+            source_collection=args.scienti_entity_graph_source_collection,
+            target_collection=args.scienti_entity_graph_target_collection,
+            entity_run_name=args.scienti_entity_graph_entity_run_name,
+            batch_size=args.scienti_entity_graph_batch_size,
+            progress_every=args.scienti_entity_graph_progress_every,
+            max_candidate_group=args.scienti_entity_graph_max_candidate_group,
+            replace=args.scienti_entity_graph_replace,
+        ), ensure_ascii=False, indent=2, default=str))
+
+    if args.audit_scienti_projects_semantics:
+        print(json.dumps(yuku.audit_scienti_projects_semantics(
+            audit_name=args.scienti_projects_audit_name,
+            collection=args.scienti_projects_audit_collection,
+            entity_run_name=args.scienti_projects_audit_entity_run_name,
+            progress_every=args.scienti_projects_audit_progress_every,
+            batch_size=args.scienti_projects_audit_batch_size,
+            example_limit=args.scienti_projects_audit_example_limit,
+        ), ensure_ascii=False, indent=2, default=str))
+
+    if args.compare_scienti_entity_versions:
+        print(json.dumps(yuku.compare_scienti_entity_versions(
+            comparison_name=args.scienti_entity_comparison_name,
+            old_run_name=args.scienti_entity_comparison_old_run,
+            new_run_name=args.scienti_entity_comparison_new_run,
+            progress_every=args.scienti_entity_comparison_progress_every,
+            batch_size=args.scienti_entity_comparison_batch_size,
+            example_limit=args.scienti_entity_comparison_example_limit,
+        ), ensure_ascii=False, indent=2, default=str))
+
+    if args.publish_scienti_entities:
+        required = {
+            '--scienti_entity_publication_run_name': args.scienti_entity_publication_run_name,
+            '--scienti_entity_publication_comparison_name': args.scienti_entity_publication_comparison_name,
+            '--scienti_entity_publication_project_audit_name': args.scienti_entity_publication_project_audit_name,
+            '--scienti_entity_publication_works_audit_name': args.scienti_entity_publication_works_audit_name,
+            '--scienti_entity_publication_patents_audit_name': args.scienti_entity_publication_patents_audit_name,
+            '--scienti_entity_publication_events_audit_name': args.scienti_entity_publication_events_audit_name,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            parser.error('--publish_scienti_entities requires ' + ', '.join(missing))
+        print(json.dumps(yuku.publish_scienti_entities(
+            run_name=args.scienti_entity_publication_run_name,
+            comparison_name=args.scienti_entity_publication_comparison_name,
+            project_audit_name=args.scienti_entity_publication_project_audit_name,
+            works_audit_name=args.scienti_entity_publication_works_audit_name,
+            patents_audit_name=args.scienti_entity_publication_patents_audit_name,
+            events_audit_name=args.scienti_entity_publication_events_audit_name,
+        ), ensure_ascii=False, indent=2, default=str))
+
+    if args.audit_scienti_auxiliary_semantics:
+        if not args.scienti_auxiliary_audit_entity or not args.scienti_auxiliary_audit_collection:
+            parser.error(
+                '--audit_scienti_auxiliary_semantics requires '
+                '--scienti_auxiliary_audit_entity and --scienti_auxiliary_audit_collection'
+            )
+        print(json.dumps(yuku.audit_scienti_auxiliary_semantics(
+            audit_name=args.scienti_auxiliary_audit_name,
+            entity=args.scienti_auxiliary_audit_entity,
+            collection=args.scienti_auxiliary_audit_collection,
+            entity_run_name=args.scienti_auxiliary_audit_entity_run_name,
+            progress_every=args.scienti_auxiliary_audit_progress_every,
+            batch_size=args.scienti_auxiliary_audit_batch_size,
+            example_limit=args.scienti_auxiliary_audit_example_limit,
+        ), ensure_ascii=False, indent=2, default=str))
+
+    if args.create_scienti_full_graph:
+        print(yuku.create_scienti_full_graph(
+            run_name=args.scienti_full_run_name,
+            graph_run_name=args.scienti_full_graph_run_name,
+            collection=args.scienti_full_graph_collection,
+            cvlac_related_collection=args.scienti_full_cvlac_related_collection,
+            cvlac_audit_name=args.scienti_full_cvlac_audit_name,
+            gruplac_raw_collection=args.scienti_full_gruplac_raw_collection,
+            gruplac_related_collection=args.scienti_full_gruplac_related_collection,
+            gruplac_audit_name=args.scienti_full_gruplac_audit_name,
+            recognized_groups_collection=args.recognized_groups_collection,
+            authority_collection=args.bibliographic_authorities_collection,
+            batch_size=args.cvlac_works_batch_size,
+            max_title_group_size=args.cvlac_works_max_title_group_size,
+            candidate_partitions=args.scienti_full_graph_partitions,
+        ))
+
+    if args.normalize_minciencias_measured_products:
+        print(yuku.normalize_minciencias_measured_products(
+            run_name=f'{args.minciencias_measurement_run_name}_normalize',
+            source_collection=args.minciencias_measurement_source_collection,
+            destination_collection=args.minciencias_measured_products_collection,
+            batch_size=args.minciencias_measurement_batch_size,
+            progress_every=args.minciencias_measurement_progress_every,
+            limit=args.minciencias_measurement_limit,
+            replace=args.minciencias_measurement_replace,
+        ))
+
+    if args.link_minciencias_measured_products:
+        print(yuku.link_minciencias_measured_products(
+            run_name=f'{args.minciencias_measurement_run_name}_link',
+            measured_collection=args.minciencias_measured_products_collection,
+            graph_collection=args.minciencias_measurement_graph_collection,
+            links_collection=args.minciencias_measurement_links_collection,
+            batch_size=args.minciencias_measurement_batch_size,
+            progress_every=args.minciencias_measurement_progress_every,
+            max_candidates=args.minciencias_measurement_max_candidates,
+            limit=args.minciencias_measurement_limit,
+            replace=args.minciencias_measurement_replace,
+        ))
+
+    if args.materialize_minciencias_enriched_graph:
+        print(yuku.materialize_minciencias_enriched_graph(
+            run_name=f'{args.minciencias_measurement_run_name}_graph',
+            graph_collection=args.minciencias_measurement_graph_collection,
+            measured_collection=args.minciencias_measured_products_collection,
+            links_collection=args.minciencias_measurement_links_collection,
+            target_collection=args.minciencias_enriched_graph_collection,
+            batch_size=args.minciencias_measurement_batch_size,
+            progress_every=args.minciencias_measurement_progress_every,
+            replace=args.minciencias_measurement_replace,
+        ))
+
+    if args.evaluate_scienti_cvlac_profiles:
+        print(yuku.evaluate_scienti_cvlac_profiles(
+            run_name=args.scienti_evaluation_name,
+            reference_collection=args.scienti_evaluation_reference_collection,
+            new_count=args.scienti_evaluation_new_count,
+            refresh_count=args.scienti_evaluation_refresh_count,
+            seed=args.scienti_evaluation_seed,
+            workers=args.scienti_workers,
+            requests_per_second=args.scienti_requests_per_second,
+        ))
+
+    if args.compare_scienti_cvlac_evaluation:
+        print(yuku.compare_scienti_cvlac_evaluation(
+            run_name=args.scienti_evaluation_name,
+        ))
+
+    if args.download_scienti_gruplac_profiles:
+        print(yuku.download_scienti_gruplac_profiles(
+            source_collection=args.recognized_groups_collection,
+            raw_collection=args.gruplac_raw_collection,
+            workers=args.scienti_workers,
+            requests_per_second=args.scienti_requests_per_second,
+            limit=args.scienti_limit,
+            refresh_days=args.scienti_refresh_days,
+            state_collection=args.gruplac_download_state_collection,
+        ))
+
+    if args.create_gruplac_related_works:
+        print(yuku.create_gruplac_related_works_collection(
+            collection=args.gruplac_related_works_collection,
+            source_collection=args.gruplac_raw_collection,
+        ))
+
+    if args.normalize_scienti_gruplac_snapshot:
+        print(yuku.normalize_scienti_gruplac_snapshot(
+            run_name=args.scienti_gruplac_normalization_run_name,
+            source_raw_collection=args.gruplac_raw_collection,
+            source_state_collection=args.gruplac_download_state_collection,
+            destination_collection=args.gruplac_related_works_collection,
+            workers=args.scienti_gruplac_normalization_workers,
+            progress_every=args.scienti_gruplac_normalization_progress_every,
+        ))
+
+    if args.verify_scienti_gruplac_incomplete:
+        print(yuku.verify_scienti_gruplac_incomplete(
+            run_name=args.gruplac_verification_run_name,
+            source_raw_collection=args.gruplac_verification_source_raw_collection,
+            source_state_collection=args.gruplac_verification_source_state_collection,
+            normalized_collection=args.gruplac_verification_normalized_collection,
+            workers=args.scienti_workers,
+            requests_per_second=args.scienti_requests_per_second,
+        ))
+
+    if args.audit_scienti_gruplac_normalization:
+        print(yuku.audit_scienti_gruplac_normalization(
+            audit_name=args.scienti_gruplac_audit_name,
+            recognized_groups_collection=args.recognized_groups_collection,
+            raw_collection=args.gruplac_raw_collection,
+            state_collection=args.gruplac_download_state_collection,
+            normalized_collection=args.gruplac_related_works_collection,
+            verification_run_name=args.scienti_gruplac_audit_verification_run_name,
+            anomaly_example_limit=args.scienti_audit_example_limit,
+        ))
+
+    if args.materialize_scienti_affiliations:
+        print(json.dumps(yuku.materialize_scienti_affiliations(
+            run_name=args.scienti_affiliations_run_name,
+            recognized_collection=args.scienti_affiliations_recognized_collection,
+            open_data_collection=args.scienti_affiliations_open_data_collection,
+            gruplac_collection=args.scienti_affiliations_gruplac_collection,
+            gruplac_audit_name=args.scienti_affiliations_gruplac_audit_name,
+            target_collection=args.scienti_affiliations_target_collection,
+            batch_size=args.scienti_affiliations_batch_size,
+            progress_every=args.scienti_affiliations_progress_every,
+            expected_groups=args.scienti_affiliations_expected_groups,
+        ), ensure_ascii=False, indent=2, default=str))
+
+    if args.materialize_scienti_persons:
+        if not args.scienti_persons_final_release_name or not args.scienti_persons_final_release_audit_name:
+            parser.error(
+                '--materialize_scienti_persons requires '
+                '--scienti_persons_final_release_name and '
+                '--scienti_persons_final_release_audit_name'
+            )
+        print(json.dumps(yuku.materialize_scienti_persons(
+            run_name=args.scienti_persons_run_name,
+            manifest_run_name=args.scienti_persons_manifest_run_name,
+            manifest_collection=args.scienti_persons_manifest_collection,
+            directory_collection=args.scienti_persons_directory_collection,
+            recognized_collection=args.scienti_persons_recognized_collection,
+            open_data_collection=args.scienti_persons_open_data_collection,
+            cvlac_collection=args.scienti_persons_cvlac_collection,
+            cvlac_audit_name=args.scienti_persons_cvlac_audit_name,
+            gruplac_collection=args.scienti_persons_gruplac_collection,
+            gruplac_audit_name=args.scienti_persons_gruplac_audit_name,
+            affiliation_run_name=args.scienti_persons_affiliation_run_name,
+            affiliation_collection=args.scienti_persons_affiliation_collection,
+            final_release_name=args.scienti_persons_final_release_name,
+            final_release_audit_name=args.scienti_persons_final_release_audit_name,
+            target_collection=args.scienti_persons_target_collection,
+            batch_size=args.scienti_persons_batch_size,
+            progress_every=args.scienti_persons_progress_every,
+            expected_people=args.scienti_persons_expected_people,
+        ), ensure_ascii=False, indent=2, default=str))
+
+    if args.publish_scienti_kahi_release:
+        required = {
+            '--scienti_kahi_release_name': args.scienti_kahi_release_name,
+            '--scienti_kahi_base_release_name': args.scienti_kahi_base_release_name,
+            '--scienti_kahi_person_run_name': args.scienti_kahi_person_run_name,
+            '--scienti_kahi_affiliation_run_name': args.scienti_kahi_affiliation_run_name,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            parser.error('--publish_scienti_kahi_release requires ' + ', '.join(missing))
+        print(json.dumps(yuku.publish_scienti_kahi_release(
+            release_name=args.scienti_kahi_release_name,
+            base_release_name=args.scienti_kahi_base_release_name,
+            person_run_name=args.scienti_kahi_person_run_name,
+            affiliation_run_name=args.scienti_kahi_affiliation_run_name,
+            audit_name=args.scienti_kahi_release_audit_name,
+            batch_size=args.scienti_kahi_release_batch_size,
+            progress_every=args.scienti_kahi_release_progress_every,
+        ), ensure_ascii=False, indent=2, default=str))
+
+    if args.load_bibliographic_authorities_json:
+        print(yuku.load_bibliographic_authorities_json(
+            args.load_bibliographic_authorities_json,
+            collection=args.bibliographic_authorities_collection,
+        ))
+
+    if args.create_cvlac_works and (
+        not args.download_cvlac_profiles
+        or args.download_cvlac_profiles_skip_works
+    ):
+        profile_ids = None
+        if args.cvlac_works_profile_ids:
+            profile_ids = [
+                profile_id.strip()
+                for profile_id in args.cvlac_works_profile_ids.split(',')
+                if profile_id.strip()
+            ]
+        yuku.create_cvlac_works_collection(
+            collection=args.cvlac_works_collection,
+            source_collection=args.cvlac_works_source_collection,
+            group_source_collection=(
+                args.cvlac_works_group_source_collection
+                or (
+                    args.gruplac_related_works_collection
+                    if args.create_gruplac_related_works
+                    else None
+                )
+            ),
+            authority_collection=args.bibliographic_authorities_collection,
+            profile_ids=profile_ids,
+            replace=not args.cvlac_works_no_replace,
+            batch_size=args.cvlac_works_batch_size,
+            max_title_group_size=args.cvlac_works_max_title_group_size,
+        )
+
+    if args.create_cvlac_related_works:
+        profile_ids = None
+        if args.cvlac_related_works_profile_ids:
+            profile_ids = [
+                profile_id.strip()
+                for profile_id in args.cvlac_related_works_profile_ids.split(',')
+                if profile_id.strip()
+            ]
+        print(yuku.create_cvlac_related_works_collection(
+            collection=args.cvlac_related_works_collection,
+            source_collection=args.cvlac_related_works_source_collection,
+            profile_ids=profile_ids,
+            download_missing=args.cvlac_related_works_download_missing,
+            replace=not args.cvlac_related_works_no_replace,
+            max_tries=args.download_cvlac_profiles_max_tries,
+            resume=args.cvlac_related_works_resume,
+        ))
+
+    if args.cvlac_related_works_distribution:
+        yuku.cvlac_related_works_type_impactu_distribution(
+            collection=args.cvlac_related_works_collection,
+            output_collection=args.cvlac_related_works_distribution_output_collection,
+        )

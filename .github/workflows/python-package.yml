@@ -38,5 +38,5 @@ jobs:
         flake8 . --count --ignore=C901 --exit-zero --max-complexity=10 --max-line-length=200 --statistics
     - name: Test with pytest
       run: |
-        python setup.py develop --user
+        python -m pip install --editable .
         pytest -q

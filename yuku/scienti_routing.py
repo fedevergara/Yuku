@@ -11,47 +11,28 @@ from __future__ import annotations
 from typing import Any
 
 from kahi_impactu_type_catalog import exact_key, get_impactu_catalog
+from yuku.scienti_types import IMPACTU_TYPES, classify_native, label_key, native_type
+from yuku.scraping_type_catalog import catalog_identity
 
 
-ENTITY_ROUTER_VERSION = "scienti-exact-router-v5"
+ENTITY_ROUTER_VERSION = "minciencias-exact-router-v7"
 IMPACTU_CATALOG = get_impactu_catalog()
 
+THESIS_FAMILIES = {
+    "Trabajos dirigidos/Tutorías - Trabajos de grado de pregrado": "undergraduate_thesis",
+    "Trabajos dirigidos/Tutorías - Trabajo de grado de maestría o especialidad clínica": "graduate_thesis",
+    "Trabajos dirigidos/Tutorías - Tesis de doctorado": "graduate_thesis",
+    "Trabajos dirigidos/Tutorías - Monografía de conclusión de curso de perfeccionamiento/especialización": "graduate_degree_work",
+}
 CVLAC_THESIS_TYPES = {
-    exact_key("Trabajos dirigidos/Tutorías - Trabajos de grado de pregrado"): {
-        "family": "undergraduate_thesis",
-        "impactu_type": "Tesis de Pregrado",
-    },
-    exact_key("Trabajos dirigidos/Tutorías - Trabajo de grado de maestría o especialidad clínica"): {
-        "family": "graduate_thesis",
-        "impactu_type": "Tesis de Posgrado",
-    },
-    exact_key("Trabajos dirigidos/Tutorías - Tesis de doctorado"): {
-        "family": "graduate_thesis",
-        "impactu_type": "Tesis de Posgrado",
-    },
-    exact_key("Trabajos dirigidos/Tutorías - Monografía de conclusión de curso de perfeccionamiento/especialización"): {
-        "family": "graduate_degree_work",
-        "impactu_type": "Docencia",
-    },
+    exact_key(native): {"family": family, "impactu_type": classify_native(native)}
+    for native, family in THESIS_FAMILIES.items()
 }
 GRUPLAC_THESIS_TYPES = {
-    exact_key("Trabajos de grado de pregrado"): {
-        "family": "undergraduate_thesis",
-        "impactu_type": "Tesis de Pregrado",
-    },
-    exact_key("Trabajo de grado de maestría o especialidad clínica"): {
-        "family": "graduate_thesis",
-        "impactu_type": "Tesis de Posgrado",
-    },
-    exact_key("Tesis de doctorado"): {
-        "family": "graduate_thesis",
-        "impactu_type": "Tesis de Posgrado",
-    },
-    exact_key("Monografía de conclusión de curso de perfeccionamiento/especialización"): {
-        "family": "graduate_degree_work",
-        "impactu_type": "Docencia",
-    },
+    exact_key(native.rsplit(" - ", 1)[1]): {"family": family, "impactu_type": classify_native(native)}
+    for native, family in THESIS_FAMILIES.items()
 }
+
 CVLAC_EXCLUDED_DIRECTED_TYPES = {
     exact_key("Trabajos dirigidos/Tutorías - Trabajos dirigidos/Tutorías de otro tipo"),
     exact_key("Trabajos dirigidos/Tutorías - Iniciación Científica"),
@@ -149,10 +130,11 @@ def _route(
     result = {
         "entity": entity,
         "family": family,
-        "impactu_type": str(impactu_type or "").strip(),
+        "impactu_type": IMPACTU_TYPES.get(label_key(impactu_type), ""),
         "rule": rule,
         "catalog_version": IMPACTU_CATALOG.version,
         "catalog_sha256": IMPACTU_CATALOG.source_sha256,
+        "scraping_type_catalog": catalog_identity(),
     }
     if ip_namespace:
         result["ip_namespace"] = ip_namespace
@@ -167,28 +149,28 @@ def route_cvlac(channel: str, record: dict[str, Any]) -> dict[str, str] | None:
         thesis = CVLAC_THESIS_TYPES.get(product_key)
         if thesis:
             return _route("works", thesis["family"], "cvlac_exact_thesis_type", impactu_type=thesis["impactu_type"])
-        specialized = SPECIALIZED_IMPACTU_TYPES.get(exact_key(record.get("type_impactu")))
+        mapping = native_type(record.get("product_type"), record.get("source_section") or "")["mapping"]
+        specialized = mapping["entity"] if mapping and mapping["entity"] != "works" else None
         if specialized:
             return _route(
                 specialized,
                 specialized[:-1] if specialized.endswith("s") else specialized,
                 "cvlac_exact_impactu_specialized_type",
-                impactu_type=record.get("type_impactu"),
+                impactu_type=mapping["type_impactu"],
                 ip_namespace="patent" if specialized == "patents" else "",
             )
         return _route(
             "works", "work", "cvlac_production_channel",
-            impactu_type=record.get("type_impactu"),
+            impactu_type=classify_native(record.get("product_type"), record.get("source_section")),
         )
-    if channel == "projects" and exact_key(record.get("project_type")) in CVLAC_PROJECT_TYPES:
-        return _route("projects", "project", "cvlac_exact_project_type", impactu_type="Proyecto")
-    if channel == "events" and exact_key(record.get("event_type")) in EVENT_TYPES:
-        return _route("events", "event", "cvlac_exact_event_type", impactu_type="Evento")
-    if channel == "patents" and exact_key(record.get("product_type")) in CVLAC_PATENT_TYPES:
-        return _route(
-            "patents", "patent", "cvlac_exact_patent_type",
-            impactu_type="Patente", ip_namespace="patent",
-        )
+    if channel in {"projects", "events", "patents"}:
+        from yuku.scraping_type_catalog import classification_context
+        value, section = classification_context(record, channel=channel)
+        mapping = native_type(value, section)["mapping"]
+        if mapping and mapping["entity"] == channel:
+            return _route(channel, channel.rstrip("s"), "cvlac_exact_" +
+                          {"projects": "project", "events": "event", "patents": "patent"}[channel] + "_type",
+                          impactu_type=mapping["type_impactu"], ip_namespace="patent" if channel == "patents" else "")
     return None
 
 
@@ -202,33 +184,37 @@ def route_gruplac(record: dict[str, Any]) -> dict[str, str] | None:
             return _route("works", thesis["family"], "gruplac_exact_thesis_type", impactu_type=thesis["impactu_type"])
         return _route(
             "works", "work", "gruplac_directed_work_channel",
-            impactu_type=record.get("type_impactu") or "Docencia",
+            impactu_type=classify_native(record.get("product_type"), record.get("source_section")),
         )
-    if section == GRUPLAC_PROJECT_SECTION:
-        if exact_key(record.get("project_type")) in GRUPLAC_PROJECT_TYPES:
-            return _route("projects", "project", "gruplac_exact_project_type", impactu_type="Proyecto")
-        return None
-    if section == GRUPLAC_EVENT_SECTION:
-        if product_type in EVENT_TYPES:
-            return _route("events", "event", "gruplac_exact_event_type", impactu_type="Evento")
+    if section in {GRUPLAC_PROJECT_SECTION, GRUPLAC_EVENT_SECTION}:
+        from yuku.scraping_type_catalog import classification_context
+        entity = "projects" if section == GRUPLAC_PROJECT_SECTION else "events"
+        value, parent = classification_context(record, entity=entity)
+        mapping = native_type(value, parent)["mapping"]
+        if mapping and mapping["entity"] == entity:
+            return _route(entity, entity.rstrip("s"), "gruplac_exact_" +
+                          ("project" if entity == "projects" else "event") + "_type",
+                          impactu_type=mapping["type_impactu"])
         return None
     patent_namespace = GRUPLAC_PATENT_IP_TYPES.get((section, product_type))
     if patent_namespace:
         return _route(
             "patents", "intellectual_property", "gruplac_exact_patent_ip_type",
-            impactu_type="Patente", ip_namespace=patent_namespace,
+            impactu_type=classify_native(record.get("product_type"), record.get("source_section")), ip_namespace=patent_namespace,
         )
     work_namespace = GRUPLAC_WORK_IP_TYPES.get((section, product_type))
     if work_namespace:
         return _route(
             "works", "work", "gruplac_exact_work_ip_type",
-            impactu_type=record.get("type_impactu"), ip_namespace=work_namespace,
+            impactu_type=classify_native(record.get("product_type"), record.get("source_section")), ip_namespace=work_namespace,
         )
     if section in {value[0] for value in GRUPLAC_PATENT_IP_TYPES | GRUPLAC_WORK_IP_TYPES}:
         return None
+    mapping = native_type(record.get("product_type"), record.get("source_section") or "")["mapping"]
+    entity = mapping["entity"] if mapping else "works"
     return _route(
-        "works", "work", "gruplac_production_channel",
-        impactu_type=record.get("type_impactu"),
+        entity, "work" if entity == "works" else entity.rstrip("s"), "gruplac_production_channel",
+        impactu_type=classify_native(record.get("product_type"), record.get("source_section")),
     )
 
 

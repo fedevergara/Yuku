@@ -13,17 +13,18 @@ from pymongo.errors import AutoReconnect, NetworkTimeout, ServerSelectionTimeout
 
 from yuku.cvlac_priority_snapshot import CvlacPrioritySnapshot
 from yuku.cvlac_related_works import norm_text, normalize_related_works_document
+from yuku.scraping_type_catalog import catalog_identity
 from yuku.gruplac_related_works import normalize_gruplac_document
 
 
 CVLAC_PARSER_NAME = "yuku.cvlac_related_works"
-CVLAC_PARSER_VERSION = "3.2.0"
+CVLAC_PARSER_VERSION = "3.5.1"
 CVLAC_NORMALIZATION_RUNS = "scienti_cvlac_normalization_runs"
 CVLAC_AUDIT_RUNS = "scienti_cvlac_normalization_audits"
 GRUPLAC_AUDIT_RUNS = "scienti_gruplac_normalization_audits"
 GRUPLAC_NORMALIZATION_RUNS = "scienti_gruplac_normalization_runs"
 GRUPLAC_PARSER_NAME = "yuku.gruplac_related_works"
-GRUPLAC_PARSER_VERSION = "3.2.0"
+GRUPLAC_PARSER_VERSION = "3.5.0"
 
 RUN_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,79}")
 DOI_RE = re.compile(r"^https://doi\.org/10\.\d{4,9}/\S+$", re.IGNORECASE)
@@ -255,6 +256,7 @@ class CvlacNormalizationRun:
             "error_collection": self.error_collection,
             "parser_name": CVLAC_PARSER_NAME,
             "parser_version": CVLAC_PARSER_VERSION,
+            "scraping_type_catalog": catalog_identity(),
         }
 
     def _prepare_run(self) -> None:
@@ -306,6 +308,7 @@ class CvlacNormalizationRun:
                     "_id": profile_id,
                     "run_name": self.run_name,
                     "parser_version": CVLAC_PARSER_VERSION,
+                    "scraping_type_catalog": catalog_identity(),
                     "source_content_sha256": str(
                         ((document.get("source") or {}).get("content_sha256")) or ""
                     ),
@@ -322,14 +325,15 @@ class CvlacNormalizationRun:
             )
         return len(failures)
 
-    def _completed_by_profile(self) -> dict[str, tuple[str, str]]:
+    def _completed_by_profile(self) -> dict[str, tuple[str, str, str]]:
         return {
             str(item["_id"]): (
                 str(((item.get("parser") or {}).get("version")) or ""),
                 str(((item.get("source") or {}).get("content_sha256")) or ""),
+                str(((item.get("parser") or {}).get("scraping_type_catalog") or {}).get("sha256") or ""),
             )
             for item in self.db[self.destination_collection].find(
-                {}, {"parser.version": 1, "source.content_sha256": 1}
+                {}, {"parser.version": 1, "parser.scraping_type_catalog": 1, "source.content_sha256": 1}
             )
         }
 
@@ -360,6 +364,7 @@ class CvlacNormalizationRun:
                 "_id": profile_id,
                 "run_name": self.run_name,
                 "parser_version": CVLAC_PARSER_VERSION,
+                "scraping_type_catalog": catalog_identity(),
                 "source_content_sha256": content_hash,
                 "stage": "parser",
                 "error": error,
@@ -385,6 +390,7 @@ class CvlacNormalizationRun:
         document["parser"] = {
             "name": CVLAC_PARSER_NAME,
             "version": CVLAC_PARSER_VERSION,
+            "scraping_type_catalog": catalog_identity(),
             "normalized_at": utc_now(),
         }
         document["source"] = self._source_metadata(raw, content_hash)
@@ -458,6 +464,7 @@ class CvlacNormalizationRun:
             "profile_status_counts": dict(sorted(status_counts.items())),
             "content_counts_this_attempt": dict(sorted(content_counts.items())),
             "parser_version": CVLAC_PARSER_VERSION,
+            "scraping_type_catalog": catalog_identity(),
             "workers": self.workers,
             "destination_collection": self.destination_collection,
         }
@@ -484,7 +491,7 @@ class CvlacNormalizationRun:
         destination,
         errors_collection,
         existing_error_ids: set[str],
-        completed: dict[str, tuple[str, str]],
+        completed: dict[str, tuple[str, str, str]],
         states: dict[str, str],
     ) -> dict[str, Any]:
         processed = skipped = failures = 0
@@ -581,6 +588,7 @@ class CvlacNormalizationRun:
                 if completed.get(profile_id) == (
                     CVLAC_PARSER_VERSION,
                     content_hash,
+                    catalog_identity()["sha256"],
                 ):
                     skipped += 1
                 else:
@@ -717,7 +725,7 @@ class CvlacNormalizationRun:
                     else source_status
                 )
                 status_counts[profile_status] += 1
-                if completed.get(profile_id) == (CVLAC_PARSER_VERSION, content_hash):
+                if completed.get(profile_id) == (CVLAC_PARSER_VERSION, content_hash, catalog_identity()["sha256"]):
                     skipped += 1
                 else:
                     try:
@@ -729,6 +737,7 @@ class CvlacNormalizationRun:
                         document["parser"] = {
                             "name": CVLAC_PARSER_NAME,
                             "version": CVLAC_PARSER_VERSION,
+                            "scraping_type_catalog": catalog_identity(),
                             "normalized_at": normalized_at,
                         }
                         document["source"] = self._source_metadata(raw, content_hash)
@@ -750,6 +759,7 @@ class CvlacNormalizationRun:
                                 "_id": profile_id,
                                 "run_name": self.run_name,
                                 "parser_version": CVLAC_PARSER_VERSION,
+                                "scraping_type_catalog": catalog_identity(),
                                 "source_content_sha256": content_hash,
                                 "error": f"{type(error).__name__}: {error}",
                                 "failed_at": utc_now(),
@@ -852,6 +862,7 @@ class GruplacNormalizationRun:
             "error_collection": self.error_collection,
             "parser_name": GRUPLAC_PARSER_NAME,
             "parser_version": GRUPLAC_PARSER_VERSION,
+            "scraping_type_catalog": catalog_identity(),
         }
 
     def _prepare(self) -> tuple[int, dict[str, str]]:
@@ -949,9 +960,10 @@ class GruplacNormalizationRun:
             str(item["_id"]): (
                 str(((item.get("parser") or {}).get("version")) or ""),
                 str(((item.get("source") or {}).get("content_sha256")) or ""),
+                str(((item.get("parser") or {}).get("scraping_type_catalog") or {}).get("sha256") or ""),
             )
             for item in destination.find(
-                {}, {"parser.version": 1, "source.content_sha256": 1}
+                {}, {"parser.version": 1, "parser.scraping_type_catalog": 1, "source.content_sha256": 1}
             )
         }
         print(
@@ -990,6 +1002,7 @@ class GruplacNormalizationRun:
                     "_id": group_code,
                     "run_name": self.run_name,
                     "parser_version": GRUPLAC_PARSER_VERSION,
+                    "scraping_type_catalog": catalog_identity(),
                     "source_content_sha256": content_hash,
                     "stage": stage,
                     "error": error,
@@ -1022,6 +1035,7 @@ class GruplacNormalizationRun:
             document["parser"] = {
                 "name": GRUPLAC_PARSER_NAME,
                 "version": GRUPLAC_PARSER_VERSION,
+                "scraping_type_catalog": catalog_identity(),
                 "normalized_at": utc_now(),
             }
             document["source"] = {
@@ -1094,6 +1108,7 @@ class GruplacNormalizationRun:
                     if completed.get(group_code) == (
                         GRUPLAC_PARSER_VERSION,
                         content_hash,
+                        catalog_identity()["sha256"],
                     ):
                         skipped += 1
                     elif executor is None:
@@ -1190,6 +1205,7 @@ class GruplacNormalizationRun:
                     sorted(content_counts.items())
                 ),
                 "parser_version": GRUPLAC_PARSER_VERSION,
+                "scraping_type_catalog": catalog_identity(),
                 "workers": self.workers,
                 "destination_collection": self.destination_collection,
             }

@@ -4,11 +4,13 @@ import re
 from typing import Any
 
 from bs4 import BeautifulSoup
+from yuku.scienti_types import classify_native, native_type
 
 from yuku.cvlac_related_works import (
     DOI_RE,
     ISBN_RE,
     ISSN_RE,
+    SUSPICIOUS_PUBLICATION_PLACE_RE,
     YEAR_RE,
     clean_bibliographic_value,
     clean_language_value,
@@ -55,6 +57,12 @@ LANGUAGE_RE = re.compile(
     r"\bIdiomas?\s*:\s*(.*?)(?=\s+Autores\s*:|\s*,\s*(?:P[aá]ginas|Vol\.|ISBN|ISSN|DOI|Editorial)\s*:|$)",
     re.IGNORECASE,
 )
+PUBLICATION_PLACE_RE = re.compile(
+    r"\bLugar\s+de\s+publicaci[oó]n\s*:\s*(.*?)"
+    r"(?=\s*,?\s*\b(?:Sitio\s+web|Autores?|[ÁA]mbito|"
+    r"Medio\s+de\s+circulaci[oó]n)\s*:|$)",
+    re.IGNORECASE,
+)
 TIMELINE_PRODUCT_SECTIONS = {
     "Estrategias Pedagógicas para el fomento a la CTI",
     "Estrategias de Comunicación del Conocimiento",
@@ -85,22 +93,7 @@ GRUPLAC_PROJECT_TYPES = (
 
 
 def classify_gruplac_product(product_type: str, section: str) -> str:
-    value = clean_text(f"{product_type} {section}").lower()
-    if "capítulo" in value or "capitulo" in value:
-        return "Capitulo de libro"
-    if "libro" in value:
-        return "Libro"
-    if "artículo" in value or "articulo" in value or "revista" in value:
-        return "Articulo de revista"
-    if "tesis de doctorado" in value:
-        return "Tesis de posgrado"
-    if "maestría" in value or "maestria" in value:
-        return "Tesis de posgrado"
-    if "grado de pregrado" in value:
-        return "Tesis de pregrado"
-    if "documento de trabajo" in value or "working paper" in value:
-        return "Documento de trabajo"
-    return product_type or section
+    return classify_native(product_type, section)
 
 
 def table_heading(table) -> str:
@@ -303,9 +296,31 @@ def metadata_after_title(cell) -> str:
     return clean_text(BeautifulSoup(parts[1], "lxml").get_text(" ", strip=True))
 
 
+def extract_gruplac_publication_context(metadata: str, section: str) -> tuple[str, str]:
+    """Separate the country slot from an explicitly labelled publication place.
+
+    Bibliographic rows begin with country/comma, whereas printed-content rows
+    begin with a date and name their publication place later in the row. An
+    explicit empty place must not fall back to the country or the date.
+    """
+    country_match = re.match(r"^([^\d,:]+),", metadata or "")
+    country = strip_value(country_match.group(1)) if country_match else ""
+    place_match = PUBLICATION_PLACE_RE.search(metadata or "")
+    if place_match:
+        place = clean_text(place_match.group(1)).strip(" ,;")
+    elif section == "Generación de Contenido Impreso":
+        place = ""
+    else:
+        # Retain the existing bounded country slot of books and articles.
+        place = country
+    if SUSPICIOUS_PUBLICATION_PLACE_RE.match(place):
+        place = ""
+    return country, place
+
+
 def extract_gruplac_book_title(metadata: str, product_type: str, section: str) -> str:
     """Extract a chapter's containing book from the fixed country/year layout."""
-    if classify_gruplac_product(product_type, section) != "Capitulo de libro":
+    if classify_gruplac_product(product_type, section) != "Capítulo de libro":
         return ""
     match = re.search(
         r"^[^,]+,\s*(?:19|20)\d{2}\s*,\s*(.*?)"
@@ -350,7 +365,7 @@ def parse_timeline_product_row(cell, text: str, section: str) -> dict[str, Any] 
     validation_marker = str(img.get("src", "")) if img else ""
     return {
         "product_type": section,
-        "type_impactu": section,
+        "type_impactu": classify_native(section),
         "title": title,
         "year": (end_years or start_years or [None])[0],
         "start_date": start_date,
@@ -394,12 +409,19 @@ def parse_product_row(row, section: str) -> dict[str, Any] | None:
     if section in TIMELINE_PRODUCT_SECTIONS:
         return parse_timeline_product_row(cell, text, section)
     strong = cell.find("strong")
-    product_type = clean_text(strong.get_text(" ", strip=True)) if strong else ""
+    raw_type = clean_text(strong.get_text(" ", strip=True)) if strong else ""
+    trusted_type = native_type(raw_type, section)
+    product_type = raw_type if trusted_type["native"] else ""
     line = first_line(cell)
     line = NUMBERED_PRODUCT_RE.sub("", line, count=1)
     if product_type and line.lower().startswith(product_type.lower()):
         line = line[len(product_type):].lstrip(" :")
     title = strip_value(line)
+    if raw_type and not product_type:
+        # An unrecognized bold phrase is commonly the title itself. Preserve
+        # it and remove only an explicitly labelled inline country tail.
+        title = strip_value(re.split(r"\s+En\s*:\s*", title, maxsplit=1,
+                                    flags=re.IGNORECASE)[0])
     if not title:
         return None
 
@@ -411,7 +433,9 @@ def parse_product_row(row, section: str) -> dict[str, Any] | None:
     )[0]
     years = [int(value) for value in YEAR_RE.findall(metadata_without_authors)]
     plausible_years = [value for value in years if 1950 <= value <= 2026]
-    country = strip_value(metadata_without_authors.split(",", 1)[0])
+    country, publication_place = extract_gruplac_publication_context(
+        metadata_without_authors, section
+    )
     publisher_match = PUBLISHER_RE.search(metadata)
     pages_match = PAGES_RE.search(metadata)
     volume_match = VOLUME_RE.search(metadata)
@@ -425,12 +449,11 @@ def parse_product_row(row, section: str) -> dict[str, Any] | None:
     )
     type_impactu = classify_gruplac_product(product_type, section)
     book_related = (
-        type_impactu in {"Libro", "Capitulo de libro"}
+        type_impactu in {"Libro", "Capítulo de libro"}
         or "editorial" in clean_text(f"{product_type} {section}").lower()
     )
     pages = clean_pages_value(pages_match.group(1)) if pages_match else ""
     start_page, end_page = split_page_range(pages)
-    publication_place = "" if YEAR_RE.fullmatch(country) else country
     publisher = (
         clean_publisher_value(publisher_match.group(1))
         if book_related and publisher_match
@@ -462,7 +485,20 @@ def parse_product_row(row, section: str) -> dict[str, Any] | None:
         "validated": validation_marker.endswith("chulo_1.jpg"),
         "raw_text": text,
     }
+    place_match = PUBLICATION_PLACE_RE.search(metadata_without_authors)
+    explicit_place = clean_text(place_match.group(1)).strip(" ,;") if place_match else ""
+    if SUSPICIOUS_PUBLICATION_PLACE_RE.match(explicit_place):
+        record["bibliographic_findings"] = [{
+            "reason": "invalid_publication_place",
+            "field": "publication_place",
+            "raw_value": explicit_place,
+        }]
+    if raw_type and not product_type:
+        record["type_findings"] = [{"reason": "bold_text_is_not_a_catalog_type",
+                                    "raw_type": raw_type, "source_section": section}]
     enrich_exact_section(record, section)
+    from yuku.scienti_journals import enrich_article
+    enrich_article(record)
     return record
 
 

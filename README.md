@@ -39,6 +39,21 @@ mongodb mongod --dbpath $HOME/data/db/
 `pip install yuku`
 
 # Usage
+## Optional identified-work snapshot for Kahi
+
+Select existing works with a valid DOI, ISBN or coherent ScienTI person–product
+pair from an explicit published release. ISSN alone does not admit a work.
+The independent operation supports exact counts, resumable generation and an
+audited sparse schema ordered by `KahiBase.empty_work()`.
+See [configuration, validation rules and detached execution](docs/scienti_identified_works.md).
+
+Journal extraction and optional DOI identity confirmation are described in
+[the versioned reconstruction guide](docs/scienti_journal_doi.md).
+
+CvLAC/GrupLAC classifications use a separate, versioned Minciencias scraping
+catalog. See [mapping rules and Excel review/import](docs/minciencias_scraping_types.md)
+and the [review workbook](docs/Catalogo_tipos_scraping_minciencias_v1.xlsx).
+
 ## Searching for required datasets IDs
 Example to get dataset id for researchers
 
@@ -877,3 +892,12 @@ Para crear una rama git localmente y trabajar sobre ella:
 ```
 git checkout -b publindex
 ```
+# Naming and retention of Minciencias publications
+
+New final outputs use `minciencias_{entity}_vXX_YYYYMMDD`; filtered works append
+`_filtered` to the full works name. Versions are independent for `works`,
+`person`, `projects`, `events`, `patents` and `affiliations`. The full pipeline
+audits all six entities and the optional filtered works before updating
+`current`, then retires older final data and bounds control retention.
+See [the publication contract](docs/minciencias_publications.md) for configuration,
+pointer locations, retention and transition from existing legacy datasets.

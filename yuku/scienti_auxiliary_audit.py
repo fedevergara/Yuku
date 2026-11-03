@@ -416,7 +416,7 @@ class ScientiAuxiliarySemanticAudit:
         expected = {
             "undergraduate_thesis": semantic_key("Tesis de Pregrado"),
             "graduate_thesis": semantic_key("Tesis de Posgrado"),
-            "graduate_degree_work": semantic_key("Docencia"),
+            "graduate_degree_work": semantic_key("Tesis de posgrado"),
         }.get(family)
         if expected and expected not in impactu_types:
             self._finding("missing_impactu_thesis_type", document, sorted(impactu_types))

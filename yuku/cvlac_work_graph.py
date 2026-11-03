@@ -9,6 +9,7 @@ from typing import Any, Iterable
 import uuid
 
 import numpy as np
+from bson import ObjectId
 from pymongo import ASCENDING, ReplaceOne, UpdateOne
 
 from yuku.cvlac_related_works import (
@@ -17,11 +18,14 @@ from yuku.cvlac_related_works import (
     normalize_doi,
 )
 from yuku.scienti_routing import route_cvlac, route_gruplac
+from yuku.scienti_types import materialize_types
+from yuku.scraping_type_catalog import catalog_identity
 
 
-GRAPH_VERSION = "minciencias-work-graph-v5"
+GRAPH_VERSION = "minciencias-work-graph-v6"
 AFFILIATION_RULE_VERSION = "gruplac-product-group-membership-v1"
 PUBLISHER_ENTITY_RULE_VERSION = "scienti-publisher-entities-v1"
+BIBLIOGRAPHIC_RULE_VERSION = "scienti-journal-context-v1"
 WORK_GRAPH_PUBLICATIONS = "scienti_work_graph_publications"
 CVLAC_SNAPSHOT_RUNS = "scienti_cvlac_priority_runs"
 CVLAC_NORMALIZATION_AUDITS = "scienti_cvlac_normalization_audits"
@@ -110,6 +114,11 @@ def stable_partition(value: str, partitions: int) -> int:
     partitions = max(1, int(partitions))
     digest = sha256(value.encode("utf-8")).digest()
     return int.from_bytes(digest[:8], "big") % partitions
+
+
+def stable_work_id(identity: str) -> ObjectId:
+    """Return a deterministic BSON identifier for a graph identity."""
+    return ObjectId(sha256(identity.encode("utf-8")).digest()[:12])
 
 
 def bibliographic_authority_keys(
@@ -249,6 +258,8 @@ def validate_scienti_graph_gate(
     if not cvlac_audit or cvlac_audit.get("status") != "passed":
         raise RuntimeError(f"CVLAC audit {cvlac_audit_name!r} is not passed")
     cvlac_audit_config = cvlac_audit.get("config") or {}
+    from yuku.scienti_doi_reconciliation import validate_transformation_audit
+    validate_transformation_audit(db, cvlac_audit, cvlac_normalized_collection)
     cvlac_summary = cvlac_audit.get("summary") or {}
     if cvlac_audit_config.get("destination_collection") != cvlac_normalized_collection:
         raise RuntimeError("CVLAC audit points to a different normalized collection")
@@ -279,6 +290,7 @@ def validate_scienti_graph_gate(
     if not gruplac_audit or gruplac_audit.get("status") != "passed":
         raise RuntimeError(f"GrupLAC audit {gruplac_audit_name!r} is not passed")
     gruplac_audit_config = gruplac_audit.get("config") or {}
+    validate_transformation_audit(db, gruplac_audit, gruplac_normalized_collection)
     gruplac_summary = gruplac_audit.get("summary") or {}
     if (
         gruplac_audit_config.get("normalized_collection")
@@ -568,6 +580,8 @@ def uniq_strings(values: Iterable[Any]) -> list[str]:
 
 
 BIBLIOGRAPHIC_FIELDS = (
+    "journal_name",
+    "issue",
     "publisher",
     "book_title",
     "edition",
@@ -731,7 +745,7 @@ def materialize_bibliographic_context(
     isbns: list[str],
 ) -> None:
     if not any(
-        str(node.get("type_family") or "") in {"book", "book_chapter", "editorial"}
+        str(node.get("type_family") or "") in {"article", "book", "book_chapter", "editorial"}
         for node in nodes
     ):
         return
@@ -752,6 +766,7 @@ def materialize_bibliographic_context(
         "book_title",
         "edition",
         "volume",
+        "issue",
         "pages",
         "start_page",
         "end_page",
@@ -772,16 +787,21 @@ def materialize_bibliographic_context(
         "extraction_rule": "explicit_bibliographic_labels_only",
         "fields": evidence,
     }
-    publisher_entities = publisher_entity_evidence(publisher)
+    if any(node.get("type_family") == "article" for node in nodes):
+        bibliographic_info["scienti"]["context_type"] = "journal"
+    publisher_entities = (publisher_entity_evidence(publisher)
+                          if not any(node.get("type_family") == "article" for node in nodes) else None)
     if publisher_entities:
         bibliographic_info["scienti"]["publisher_entities"] = publisher_entities
     entry["bibliographic_info"] = bibliographic_info
 
     book_title = (evidence.get("book_title") or {}).get("value", "")
-    source_name = book_title or publisher
+    article = any(node.get("type_family") == "article" for node in nodes)
+    journal_name = (evidence.get("journal_name") or {}).get("value", "")
+    source_name = journal_name if article else book_title or publisher
     if not source_name:
         return
-    source_type = "book" if book_title else "publisher"
+    source_type = "journal" if article else "book" if book_title else "publisher"
     entry["source"] = {
         "name": source_name,
         "updated": [{"source": "minciencias", "time": timestamp}],
@@ -797,7 +817,9 @@ def materialize_bibliographic_context(
             {"name": publisher, "country_code": ""} if publisher else {}
         ),
         "external_ids": (
-            [{"source": "isbn", "id": value} for value in isbns]
+            [{"source": "issn", "id": value} for value in uniq_strings(
+                value for node in nodes for value in node.get("issn", [])
+            )] if article else [{"source": "isbn", "id": value} for value in isbns]
             if book_title
             else []
         ),
@@ -1258,7 +1280,7 @@ def materialize_work(
         # Unsafe singleton occurrences intentionally remain source-specific.
         identity = f"{GRAPH_VERSION}|node|{nodes[0]['_id']}"
     entry = {
-        "_id": sha256(identity.encode("utf-8")).hexdigest(),
+        "_id": stable_work_id(identity),
         "updated": [{"source": "minciencias", "time": timestamp}],
         "titles": titles,
         "doi": dois[0] if dois else "",
@@ -1346,30 +1368,20 @@ def materialize_work(
         author["affiliations"] = affiliations
 
     impactu_types = uniq_strings(node.get("type_impactu", "") for node in nodes)
-    product_types_by_source: dict[str, list[str]] = {}
-    for node in nodes:
-        source_kind = str(node.get("source_kind") or "cvlac")
-        product_types_by_source.setdefault(source_kind, []).append(
-            node.get("product_type", "")
-        )
     entry["types"] = [
-        {
-            "provenance": "minciencias",
-            "source": "impactu",
-            "type": value,
-            "level": 0,
-        }
+        {"provenance": "minciencias", "source": "impactu", "type": value, "level": 0}
         for value in impactu_types
     ] + [
-        {
-            "provenance": "minciencias",
-            "source": source_kind,
-            "type": value,
-            "level": 1,
-        }
-        for source_kind in sorted(product_types_by_source)
-        for value in uniq_strings(product_types_by_source[source_kind])
+        {"provenance": "minciencias", "source": "minciencias",
+         "type": node.get("product_type", ""), "level": 1,
+         **({"parent": node["source_section"]} if node.get("source_section") else {})}
+        for node in nodes if node.get("product_type")
     ]
+
+    materialize_types(entry)
+    extraction_findings = [finding for node in nodes for finding in node.get("type_findings", [])]
+    if extraction_findings:
+        entry.setdefault("type_audit", {}).setdefault("findings", []).extend(extraction_findings)
 
     entry["external_ids"] = [
         {"provenance": "minciencias", "source": "doi", "id": value}
@@ -1392,6 +1404,9 @@ def materialize_work(
     # Bibliographic publication context is enrichment-only. It is deliberately
     # materialized after identity selection and therefore cannot merge works.
     materialize_bibliographic_context(entry, nodes, timestamp, isbns)
+    confirmations = [node["doi_reconciliation"] for node in nodes if node.get("doi_reconciliation")]
+    if confirmations:
+        entry.setdefault("bibliographic_info", {}).setdefault("scienti", {})["doi_reconciliation"] = confirmations
 
     areas = uniq_strings(value for node in nodes for value in node.get("areas", []))
     entry["subjects"] = []
@@ -1524,7 +1539,9 @@ class CvlacWorkGraphBuilder:
                 "group_source_collection": self.group_source_collection_name,
                 "target_collection": self.collection_name,
                 "graph_version": GRAPH_VERSION,
+                "scraping_type_catalog": catalog_identity(),
                 "publisher_entity_rule_version": PUBLISHER_ENTITY_RULE_VERSION,
+                "bibliographic_rule_version": BIBLIOGRAPHIC_RULE_VERSION,
             }
         )
 
@@ -1796,9 +1813,11 @@ class CvlacWorkGraphBuilder:
                     "title": title,
                     "title_key": title_key,
                     "year": record.get("year"),
-                    "type_impactu": record.get("type_impactu", ""),
-                    "type_family": type_family(record.get("type_impactu", "")),
+                    "type_impactu": route.get("impactu_type", ""),
+                    "type_family": type_family(route.get("impactu_type", "")),
                     "product_type": record.get("product_type", ""),
+                    "source_section": record.get("source_section", ""),
+                    "type_findings": record.get("type_findings", []),
                     "authors": record.get("authors", []),
                     "keywords": record.get("keywords", []),
                     "areas": record.get("areas", []),
@@ -1817,6 +1836,9 @@ class CvlacWorkGraphBuilder:
                     ),
                     "affiliation": "",
                     "country": record.get("country", ""),
+                    "journal_name": record.get("journal_name", ""),
+                    "issue": record.get("issue", ""),
+                    "doi_reconciliation": record.get("doi_reconciliation", {}),
                     "publisher": record.get("publisher", ""),
                     "book_title": record.get("book_title", ""),
                     "edition": record.get("edition", ""),
@@ -1913,9 +1935,11 @@ class CvlacWorkGraphBuilder:
                     "title": title,
                     "title_key": title_key,
                     "year": record.get("year"),
-                    "type_impactu": record.get("type_impactu", ""),
-                    "type_family": type_family(record.get("type_impactu", "")),
+                    "type_impactu": route.get("impactu_type", ""),
+                    "type_family": type_family(route.get("impactu_type", "")),
                     "product_type": record.get("product_type", ""),
+                    "source_section": record.get("source_section", ""),
+                    "type_findings": record.get("type_findings", []),
                     "authors": authors,
                     "keywords": record.get("keywords", []),
                     "areas": record.get("areas", []),
@@ -1934,6 +1958,9 @@ class CvlacWorkGraphBuilder:
                     ),
                     "affiliation": record.get("affiliation", ""),
                     "country": record.get("country", ""),
+                    "journal_name": record.get("journal_name", ""),
+                    "issue": record.get("issue", ""),
+                    "doi_reconciliation": record.get("doi_reconciliation", {}),
                     "publisher": record.get("publisher", ""),
                     "book_title": record.get("book_title", ""),
                     "edition": record.get("edition", ""),
@@ -2043,9 +2070,11 @@ class CvlacWorkGraphBuilder:
                     "title": title,
                     "title_key": title_key,
                     "year": record.get("year"),
-                    "type_impactu": record.get("type_impactu", ""),
-                    "type_family": type_family(record.get("type_impactu", "")),
+                    "type_impactu": route.get("impactu_type", ""),
+                    "type_family": type_family(route.get("impactu_type", "")),
                     "product_type": record.get("product_type", ""),
+                    "source_section": record.get("source_section", ""),
+                    "type_findings": record.get("type_findings", []),
                     "authors": authors,
                     "keywords": record.get("keywords", []),
                     "areas": record.get("areas", []),
@@ -2064,6 +2093,9 @@ class CvlacWorkGraphBuilder:
                     ),
                     "affiliation": record.get("affiliation", ""),
                     "country": record.get("country", ""),
+                    "journal_name": record.get("journal_name", ""),
+                    "issue": record.get("issue", ""),
+                    "doi_reconciliation": record.get("doi_reconciliation", {}),
                     "publisher": record.get("publisher", ""),
                     "book_title": record.get("book_title", ""),
                     "edition": record.get("edition", ""),
@@ -2485,11 +2517,9 @@ class CvlacWorkGraphBuilder:
             for entry, anchor, component_snapshot in output_buffer:
                 original_id = entry["_id"]
                 if original_id in claimed:
-                    entry["_id"] = sha256(
-                        (
-                            f"{GRAPH_VERSION}|collision|{original_id}|{anchor}"
-                        ).encode("utf-8")
-                    ).hexdigest()
+                    entry["_id"] = stable_work_id(
+                        f"{GRAPH_VERSION}|collision|{original_id}|{anchor}"
+                    )
                     entry["identity_collision_of"] = original_id
                     self.metrics["materialized_identity_collisions"] += 1
                     review_id = sha256(
@@ -2600,8 +2630,10 @@ class CheckpointedNormalizedWorkGraphBuilder(CvlacWorkGraphBuilder):
         }
         return {
             "graph_version": GRAPH_VERSION,
+            "scraping_type_catalog": catalog_identity(),
             "affiliation_rule_version": AFFILIATION_RULE_VERSION,
             "publisher_entity_rule_version": PUBLISHER_ENTITY_RULE_VERSION,
+                "bibliographic_rule_version": BIBLIOGRAPHIC_RULE_VERSION,
             "source_mode": self.source_mode,
             "cvlac_normalized_collection": self.source_collection_name,
             "gruplac_normalized_collection": self.group_source_collection_name,
@@ -3121,7 +3153,9 @@ class CheckpointedNormalizedWorkGraphBuilder(CvlacWorkGraphBuilder):
                 "_id": self.run_id,
                 "status": "published",
                 "graph_version": GRAPH_VERSION,
+                "scraping_type_catalog": catalog_identity(),
                 "publisher_entity_rule_version": PUBLISHER_ENTITY_RULE_VERSION,
+                "bibliographic_rule_version": BIBLIOGRAPHIC_RULE_VERSION,
                 "collection": self.collection_name,
                 "previous_collection": previous,
                 "works": expected_works,
@@ -3131,8 +3165,8 @@ class CheckpointedNormalizedWorkGraphBuilder(CvlacWorkGraphBuilder):
             upsert=True,
         )
         if self.publish_pointer:
-            publications.replace_one(
-                {"_id": "current"},
+            from yuku.minciencias_publication import publish_current
+            publish_current(self.db, WORK_GRAPH_PUBLICATIONS, "current",
                 {
                     "_id": "current",
                     "current_collection": self.collection_name,
@@ -3140,7 +3174,6 @@ class CheckpointedNormalizedWorkGraphBuilder(CvlacWorkGraphBuilder):
                     "previous_collection": previous,
                     "published_at": published_at,
                 },
-                upsert=True,
             )
         return {
             "collection": self.collection_name,
@@ -3394,7 +3427,9 @@ class CheckpointedNormalizedWorkGraphBuilder(CvlacWorkGraphBuilder):
                 "run_id": self.run_id,
                 "status": "complete",
                 "graph_version": GRAPH_VERSION,
+                "scraping_type_catalog": catalog_identity(),
                 "publisher_entity_rule_version": PUBLISHER_ENTITY_RULE_VERSION,
+                "bibliographic_rule_version": BIBLIOGRAPHIC_RULE_VERSION,
                 "collection": self.collection_name,
                 "previous_collection": (
                     ((stages.get("publish") or {}).get("result") or {}).get(

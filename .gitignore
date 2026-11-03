@@ -128,6 +128,8 @@ dmypy.json
 # Local execution data, credentials/paths and generated artifacts
 *.json
 !docs/scienti_kahi_ingestion_contract_v1.json
+!yuku/data/minciencias_scraping_types_v1.json
+!tests/fixtures/**/*.json
 logs/
 bin/yuku_normalize_scienti_v3
 bin/yuku_rebuild_scienti_entities_dates_v2

@@ -28,9 +28,13 @@ AFFILIATION_PUBLICATIONS = "scienti_affiliation_publications"
 AFFILIATION_AUDITS = "scienti_affiliation_materialization_audits"
 FINAL_RELEASES = "scienti_final_release_publications"
 FINAL_RELEASE_AUDITS = "scienti_final_release_audits"
-MATERIALIZER_VERSION = "scienti-persons-v2"
+MATERIALIZER_VERSION = "scienti-persons-v4"
 REQUIRED_CVLAC_PARSER_VERSION = "3.2.0"
 REQUIRED_GRUPLAC_PARSER_VERSION = "3.2.0"
+SUPPORTED_CVLAC_PARSER_VERSIONS = {REQUIRED_CVLAC_PARSER_VERSION, "3.3.0", "3.4.0", "3.5.0", "3.5.1"}
+SUPPORTED_GRUPLAC_PARSER_VERSIONS = {
+    REQUIRED_GRUPLAC_PARSER_VERSION, "3.3.0", "3.4.0", "3.4.1", "3.5.0"
+}
 COD_RH_RE = re.compile(r"\d{10}")
 NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,79}")
 COLLECTION_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,119}")
@@ -326,7 +330,7 @@ def group_affiliation(group: dict[str, Any], member: dict[str, Any]) -> dict[str
     start, end = parse_membership_period(member.get("period"))
     return {
         "id": code, "name": clean_text(group.get("group_name")),
-        "types": [{"source": "scienti", "type": "group"}],
+        "types": [{"source": "minciencias", "type": "group"}],
         "start_date": start, "end_date": end,
         "position": clean_text(member.get("role")),
     }
@@ -466,6 +470,7 @@ class ScientiPersonMaterializer:
         batch_size: int = 500,
         progress_every: int = 10000,
         expected_people: int = 0,
+        publish_pointer: bool = True,
     ):
         if not NAME_RE.fullmatch(run_name or ""):
             raise ValueError("invalid person materialization run name")
@@ -504,6 +509,7 @@ class ScientiPersonMaterializer:
         self.batch_size = batch_size
         self.progress_every = progress_every
         self.expected_people = expected_people
+        self.publish_pointer = publish_pointer
         self.runs = db[PERSON_RUNS]
         self.release_collections: dict[str, str] = {}
         self.release_expected_documents: dict[str, int] = {}
@@ -526,6 +532,9 @@ class ScientiPersonMaterializer:
             "expected_people": expected_people,
         }
         self.config_hash = sha256(_canonical_json(self.config)).hexdigest()
+        if not publish_pointer:
+            self.config["publish_pointer"] = False
+            self.config_hash = sha256(_canonical_json(self.config)).hexdigest()
 
     def _validate_audit(
         self, collection: str, audit_name: str, destination: str, parser: str
@@ -544,13 +553,19 @@ class ScientiPersonMaterializer:
         audited_destination = config.get("normalized_collection") or config.get(
             "destination_collection"
         )
+        supported = (
+            SUPPORTED_GRUPLAC_PARSER_VERSIONS
+            if collection == GRUPLAC_AUDITS else SUPPORTED_CVLAC_PARSER_VERSIONS
+        )
         if audited_destination != destination or config.get("parser_version") not in {
-            None, parser
-        } or config.get("expected_parser_version") not in {None, parser}:
+            None, *supported
+        } or config.get("expected_parser_version") not in {None, *supported}:
             raise RuntimeError(f"source audit {audit_name!r} is incompatible")
         versions = summary.get("parser_version_counts") or {}
-        if versions and set(versions) != {parser}:
+        if versions and not set(versions) <= supported:
             raise RuntimeError(f"source audit {audit_name!r} used another parser")
+        from yuku.scienti_doi_reconciliation import validate_transformation_audit
+        validate_transformation_audit(self.db, audit, destination)
 
     def _validate_sources(self) -> dict[str, Any]:
         required = {
@@ -923,13 +938,9 @@ class ScientiPersonMaterializer:
         aliases = [name, clean_person_name(general.get("citation_name"))]
         identifiers = [profile_external_id(value) for value in profile.get("identifiers", [])]
         degrees = [profile_degree(value) for value in profile.get("degrees", [])]
-        affiliations = [
-            experience_affiliation(value) for value in profile.get("experiences", [])
-        ]
         updated_time = source_time((item.get("source") or {}).get("fetched_at"), built_at)
         values = _add_to_set(
             aliases=aliases, external_ids=identifiers, degrees=degrees,
-            affiliations=affiliations,
             updated=[{"source": "scienti", "time": updated_time}],
         )
         update: dict[str, Any] = {"$addToSet": values}
@@ -1200,6 +1211,7 @@ class ScientiPersonMaterializer:
         return audit
 
     def _publish(self, summary: dict[str, Any], audit: dict[str, Any]) -> None:
+        from yuku.minciencias_publication import publish_current
         publications = self.db[PERSON_PUBLICATIONS]
         current = publications.find_one({"_id": "current"}) or {}
         publication = {
@@ -1209,12 +1221,14 @@ class ScientiPersonMaterializer:
             "final_entity_release": self.final_release_name,
         }
         publications.replace_one({"_id": self.run_name}, publication, upsert=True)
-        publications.replace_one({"_id": "current"}, {
+        if not self.publish_pointer:
+            return
+        publish_current(self.db, PERSON_PUBLICATIONS, "current", {
             "_id": "current", "current_run": self.run_name,
             "previous_run": clean_text(current.get("current_run")),
             "collection": self.target_collection, "audit": audit["_id"],
             "published_at": publication["published_at"],
-        }, upsert=True)
+        })
 
     def _cleanup_transients(self) -> None:
         """Remove resumable artifacts after the immutable target is published."""

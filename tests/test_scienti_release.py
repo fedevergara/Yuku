@@ -12,6 +12,17 @@ DOI = "https://doi.org/10.1000/test"
 
 
 class ScientiFinalReleaseTest(unittest.TestCase):
+    def test_six_entity_version_can_publish_without_replacing_current(self):
+        self.prepare_identity_snapshots()
+        current = self.db.scienti_final_release_publications.find_one({"_id": "current"})
+        published = self.manager.publish_with_identities(
+            release_name="new_identity_release", base_release_name="release_test",
+            person_run_name="persons_run", affiliation_run_name="affiliations_run",
+            publish_pointer=False,
+        )
+        self.assertEqual(published["status"], "published")
+        self.assertEqual(self.db.scienti_final_release_publications.find_one({"_id": "current"}), current)
+
     def setUp(self):
         self.db = mongomock.MongoClient().dam
         self.manager = ScientiFinalReleaseManager(self.db)

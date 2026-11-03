@@ -216,6 +216,30 @@ class ScientiPersonMaterializerTests(unittest.TestCase):
             progress_every=100, expected_people=expected_people,
         )
 
+    def test_current_parser_versions_can_materialize_audited_persons(self):
+        for gruplac_version in ("3.4.0", "3.4.1"):
+            with self.subTest(gruplac_version=gruplac_version):
+                self.db.cvlac_normalized.update_many({}, {"$set": {"parser.version": "3.4.0"}})
+                self.db.gruplac_normalized.update_many({}, {"$set": {"parser.version": gruplac_version}})
+                self.db.scienti_cvlac_normalization_audits.update_one(
+                    {"_id": "cvlac_audit"}, {"$set": {"config.parser_version": "3.4.0",
+                        "summary.parser_version_counts": {"3.4.0": 2}}}
+                )
+                self.db.scienti_gruplac_normalization_audits.update_one(
+                    {"_id": "gruplac_audit"}, {"$set": {"config.expected_parser_version": gruplac_version,
+                        "summary.parser_version_counts": {gruplac_version: 1}}}
+                )
+                suffix = gruplac_version.replace(".", "_")
+                result = self.materializer("persons_" + suffix, "people_" + suffix).run()
+                self.assertEqual(result["documents"], 2)
+
+    def test_unknown_parser_in_audit_summary_is_still_rejected(self):
+        self.db.scienti_gruplac_normalization_audits.update_one(
+            {"_id": "gruplac_audit"}, {"$set": {"summary.parser_version_counts": {"3.99.0": 1}}}
+        )
+        with self.assertRaisesRegex(RuntimeError, "used another parser"):
+            self.materializer().run()
+
     def test_materializes_full_manifest_with_doi_only_identity_anchors(self):
         first = self.materializer().run()
         second = self.materializer().run()
@@ -227,6 +251,10 @@ class ScientiPersonMaterializerTests(unittest.TestCase):
         self.assertEqual(set(ana), {"_id"} | PERSON_FIELDS)
         self.assertEqual(ana["sex"], "Mujer")
         self.assertEqual(ana["affiliations"][0]["id"], "COL0000001")
+        self.assertFalse(any(
+            item.get("name") == "Universidad Ejemplo"
+            for item in ana["affiliations"]
+        ))
         self.assertTrue(any(item["source"] == "orcid" for item in ana["external_ids"]))
         self.assertEqual(ana["related_works"], [{
             "provenance": "minciencias", "source": "doi",

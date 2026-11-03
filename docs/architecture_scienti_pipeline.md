@@ -1,3 +1,5 @@
+La configuración y el cierre vigentes se describen en el [contrato de publicaciones Minciencias](minciencias_publications.md). Los ejemplos con nombres `scienti_*_final_*` corresponden a ejecuciones anteriores.
+
 # Arquitectura ScienTI integral de Yuku
 
 ## Objetivo

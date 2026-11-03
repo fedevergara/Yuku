@@ -9,6 +9,8 @@ import json
 import re
 from typing import Any
 
+from yuku.scraping_type_catalog import catalog_identity
+
 from yuku.scienti_entities import ENTITY_AUDITS, ENTITY_RUNS
 
 
@@ -50,6 +52,7 @@ class ScientiEntitySnapshotMaterializer:
         self.runs = db[MATERIALIZATION_RUNS]
         self.config = {
             "materialization_version": MATERIALIZATION_VERSION,
+            "scraping_type_catalog": catalog_identity(),
             "entity": entity,
             "entity_run_name": entity_run_name,
             "source_collection": source_collection,

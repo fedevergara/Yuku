@@ -19,11 +19,15 @@ from pymongo.errors import DuplicateKeyError
 from yuku.scienti_search import read_json_array
 from yuku.scienti_bibliographic_audit import BIBLIOGRAPHIC_AUDITS
 from yuku.socrata_snapshot import SocrataSnapshotDownloader
+from yuku.minciencias_publication import (
+    EntityRetention, adopt_published_history, collection_name, publication_date,
+    promote_release, publish_current, register_release, resolve_outputs,
+)
 
 
 PIPELINE_RUNS = "scienti_pipeline_runs"
 PIPELINE_LOCKS = "scienti_pipeline_locks"
-PIPELINE_VERSION = "scienti-full-pipeline-v14"
+PIPELINE_VERSION = "scienti-full-pipeline-v18"
 
 
 STAGES = (
@@ -41,6 +45,7 @@ STAGES = (
     "cvlac_download",
     "cvlac_normalize",
     "cvlac_audit",
+    "doi_reconciliation",
     "entities_normalize",
     "projects_semantic_audit",
     "works_semantic_audit",
@@ -63,6 +68,10 @@ STAGES = (
     "events_final",
     "bibliographic_audit",
     "final_release",
+    "affiliations_final",
+    "persons_final",
+    "kahi_release",
+    "identified_works",
     "cleanup",
 )
 
@@ -132,6 +141,9 @@ def load_pipeline_config(path: str | Path) -> dict[str, Any]:
         "pipeline_version": PIPELINE_VERSION,
         "run_name": run_name,
         "snapshot_tag": tag,
+        "publication": {"date": tag if re.fullmatch(r"[0-9]{8}", tag) else publication_date(),
+                        "versions": {entity: "auto" for entity in
+                                     ("works", "person", "projects", "events", "patents", "affiliations")}},
         "open_data": {
             "refresh": False,
             "batch_size": 20000,
@@ -154,6 +166,9 @@ def load_pipeline_config(path: str | Path) -> dict[str, Any]:
             "max_download_passes": 3,
         },
         "processing": {
+            "generate_identified_works": True,
+            "confirm_conflicting_dois": False,
+            "doi_request_delay": 1.0,
             "cvlac_workers": 8,
             "gruplac_workers": 8,
             "normalization_batch_size": 50,
@@ -180,6 +195,8 @@ def load_pipeline_config(path: str | Path) -> dict[str, Any]:
             "gruplac_raw": f"gruplac_stage_raw_{tag}",
             "gruplac_downloads": f"gruplac_downloads_{tag}",
             "gruplac_normalized": f"gruplac_related_works_{tag}",
+            "cvlac_reconciled": f"cvlac_related_works_reconciled_{tag}",
+            "gruplac_reconciled": f"gruplac_related_works_reconciled_{tag}",
             "entity_works": f"scienti_works_normalized_{tag}",
             "entity_projects": f"scienti_projects_normalized_{tag}",
             "entity_patents": f"scienti_patents_normalized_{tag}",
@@ -200,6 +217,26 @@ def load_pipeline_config(path: str | Path) -> dict[str, Any]:
         },
     }
     config = _merge(defaults, value)
+    date = publication_date(config["publication"]["date"])
+    versions = config["publication"]["versions"]
+    if set(versions) - {"works", "person", "projects", "events", "patents", "affiliations"}:
+        raise ValueError("publication.versions contains unknown entities; use person, not persons")
+    for flag in ("generate_identified_works", "confirm_conflicting_dois", "cleanup_transient"):
+        if not isinstance(config["processing"][flag], bool):
+            raise ValueError(f"processing.{flag} must be a boolean")
+    final_keys = {"works": "final_graph", "projects": "projects_final",
+                  "patents": "patents_final", "events": "events_final",
+                  "person": "persons_final", "affiliations": "affiliations_final"}
+    for entity, key in final_keys.items():
+        version = config["publication"]["versions"].get(entity, "auto")
+        expected = collection_name(entity, 1 if version == "auto" else version, date)
+        if key in value.get("collections", {}) and config["collections"][key] != expected:
+            raise ValueError(f"{key} must use the publication naming contract; configure publication.versions")
+        config["collections"][key] = expected
+    filtered = config["collections"]["final_graph"] + "_filtered"
+    if "identified_works" in value.get("collections", {}) and config["collections"]["identified_works"] != filtered:
+        raise ValueError("identified_works must match the full works version and date")
+    config["collections"]["identified_works"] = filtered
     config["config_path"] = str(source)
     collections = config["collections"]
     if len(set(collections.values())) != len(collections):
@@ -248,6 +285,30 @@ class ScientiFullPipeline:
         self.run_name = self.config["run_name"]
         self.runs = self.db[PIPELINE_RUNS]
         self.locks = self.db[PIPELINE_LOCKS]
+        self.input_config_hash = _fingerprint({key: value for key, value in self.config.items() if key != "config_path"})
+        previous = self.runs.find_one({"_id": self.run_name}) or {}
+        if previous:
+            if previous.get("input_config_hash") != self.input_config_hash:
+                raise ValueError("pipeline input configuration changed; use a new run")
+            self.config = deepcopy(previous["config"])
+        else:
+            outputs = resolve_outputs(self.db, date=self.config["publication"]["date"],
+                                      versions=self.config["publication"]["versions"])
+            for entity, key in {"works": "final_graph", "projects": "projects_final",
+                                "patents": "patents_final", "events": "events_final",
+                                "person": "persons_final", "affiliations": "affiliations_final"}.items():
+                self.config["collections"][key] = outputs[entity]
+            self.config["collections"]["identified_works"] = outputs["works"] + "_filtered"
+            self.config["publication"]["resolved"] = outputs
+        from yuku.scraping_type_catalog import catalog_identity
+        identity = catalog_identity()
+        if previous and self.config.get("scraping_type_catalog") != identity:
+            raise ValueError("scraping type catalog changed; use a new pipeline session")
+        self.config["scraping_type_catalog"] = identity
+        from yuku.scienti_product_quality import PRODUCT_QUALITY_VERSION
+        if previous and self.config.get("product_quality_version") != PRODUCT_QUALITY_VERSION:
+            raise ValueError("product quality policy changed; use a new pipeline session")
+        self.config["product_quality_version"] = PRODUCT_QUALITY_VERSION
         self.config_hash = _fingerprint(
             {key: value for key, value in self.config.items() if key != "config_path"}
         )
@@ -270,6 +331,7 @@ class ScientiFullPipeline:
                     "pipeline_version": PIPELINE_VERSION,
                     "config": self.config,
                     "config_hash": self.config_hash,
+                    "input_config_hash": self.input_config_hash,
                     "stages": {},
                 }
             },
@@ -643,11 +705,11 @@ class ScientiFullPipeline:
             run_name=f"{self.run_name}_cvlac",
             graph_run_name=f"{self.run_name}_base_graph",
             collection=self.names["base_graph"],
-            cvlac_related_collection=self.names["cvlac_normalized"],
-            cvlac_audit_name=f"{self.run_name}_cvlac_audit",
+            cvlac_related_collection=self._normalized_source("cvlac"),
+            cvlac_audit_name=self._normalized_audit("cvlac"),
             gruplac_raw_collection=self.names["gruplac_raw"],
-            gruplac_related_collection=self.names["gruplac_normalized"],
-            gruplac_audit_name=f"{self.run_name}_gruplac_audit",
+            gruplac_related_collection=self._normalized_source("gruplac"),
+            gruplac_audit_name=self._normalized_audit("gruplac"),
             recognized_groups_collection=self.names["recognized_groups"],
             batch_size=int(processing["graph_batch_size"]),
             candidate_partitions=int(processing["graph_partitions"]),
@@ -682,14 +744,33 @@ class ScientiFullPipeline:
         processing = self.config["processing"]
         return self.yuku.normalize_scienti_entities(
             run_name=f"{self.run_name}_entities",
-            cvlac_collection=self.names["cvlac_normalized"],
-            gruplac_collection=self.names["gruplac_normalized"],
+            cvlac_collection=self._normalized_source("cvlac"),
+            gruplac_collection=self._normalized_source("gruplac"),
             works_collection=self.names["entity_works"],
             projects_collection=self.names["entity_projects"],
             patents_collection=self.names["entity_patents"],
             events_collection=self.names["entity_events"],
             batch_size=int(processing["entity_batch_size"]),
             progress_every=int(processing["progress_every"]),
+        )
+
+    def _normalized_source(self, kind):
+        enabled = self.config["processing"].get("confirm_conflicting_dois", False)
+        return self.names[f"{kind}_reconciled" if enabled else f"{kind}_normalized"]
+
+    def _normalized_audit(self, kind):
+        prefix = f"{self.run_name}_doi_reconciliation" if self.config["processing"].get("confirm_conflicting_dois", False) else self.run_name
+        return f"{prefix}_{kind}_audit"
+
+    def _doi_reconciliation(self):
+        if not self.config["processing"].get("confirm_conflicting_dois", False):
+            return {"status": "skipped", "reason": "DOI confirmation disabled"}
+        return self.yuku.reconcile_scienti_dois(
+            run_name=f"{self.run_name}_doi_reconciliation",
+            sources={kind: self.names[f"{kind}_normalized"] for kind in ("cvlac", "gruplac")},
+            targets={kind: self.names[f"{kind}_reconciled"] for kind in ("cvlac", "gruplac")},
+            audits={kind: f"{self.run_name}_{kind}_audit" for kind in ("cvlac", "gruplac")},
+            confirm_doi=True, request_delay=float(self.config["processing"].get("doi_request_delay", 1.0)),
         )
 
     def _projects_semantic_audit(self) -> dict[str, Any]:
@@ -867,8 +948,7 @@ class ScientiFullPipeline:
             previous = str(current.get("current_collection") or "")
             if previous == target:
                 previous = str(current.get("previous_collection") or "")
-            publications.replace_one(
-                {"_id": current_id},
+            publish_current(self.db, publication_name, current_id,
                 {
                     "_id": current_id,
                     "target_entity": entity,
@@ -877,7 +957,6 @@ class ScientiFullPipeline:
                     "previous_collection": previous,
                     "published_at": published_at,
                 },
-                upsert=True,
             )
 
     def _final_graph(self) -> dict[str, Any]:
@@ -920,129 +999,64 @@ class ScientiFullPipeline:
                 entity: f"{self.run_name}_{entity}_final"
                 for entity in ("works", "projects", "patents", "events")
             },
+            publish_pointer=False,
         )
-        self._publish_legacy_final_pointers(release)
         return release
 
+    def _affiliations_final(self):
+        return self.yuku.materialize_scienti_affiliations(
+            run_name=f"{self.run_name}_affiliations_final",
+            recognized_collection=self.names["recognized_groups"],
+            open_data_collection=self.config["open_data"]["datasets"]["groups"]["data_collection"],
+            gruplac_collection=self._normalized_source("gruplac"),
+            gruplac_audit_name=self._normalized_audit("gruplac"),
+            target_collection=self.names["affiliations_final"], publish_pointer=False)
+
+    def _persons_final(self):
+        tag = self.config["snapshot_tag"]
+        manifest = f"{self.run_name}_cvlac"
+        return self.yuku.materialize_scienti_persons(
+            run_name=f"{self.run_name}_persons_final", manifest_run_name=manifest,
+            manifest_collection=manifest + "_targets", directory_collection=self.names["all_researchers"],
+            recognized_collection=self.names["recognized_researchers"],
+            open_data_collection=self.config["open_data"]["datasets"]["researchers"]["data_collection"],
+            cvlac_collection=self._normalized_source("cvlac"), cvlac_audit_name=self._normalized_audit("cvlac"),
+            gruplac_collection=self._normalized_source("gruplac"), gruplac_audit_name=self._normalized_audit("gruplac"),
+            affiliation_run_name=f"{self.run_name}_affiliations_final",
+            affiliation_collection=self.names["affiliations_final"],
+            final_release_name=f"release_{tag}", final_release_audit_name=f"release_{tag}_audit",
+            target_collection=self.names["persons_final"], publish_pointer=False)
+
+    def _kahi_release(self):
+        tag = self.config["snapshot_tag"]
+        return self.yuku.publish_scienti_kahi_release(
+            release_name=f"release_{tag}_kahi", base_release_name=f"release_{tag}",
+            person_run_name=f"{self.run_name}_persons_final",
+            affiliation_run_name=f"{self.run_name}_affiliations_final",
+            audit_name=f"release_{tag}_kahi_audit", publish_pointer=False)
+
+    def _identified_works(self):
+        if not self.config["processing"].get("generate_identified_works", True):
+            return {"status": "skipped", "reason": "identified works generation disabled"}
+        release_name = f"release_{self.config['snapshot_tag']}_kahi"
+        count_run = f"{self.run_name}_identified_count"
+        self.yuku.create_scienti_identified_works(
+            release_name=release_name, run_name=count_run, count_only=True)
+        return self.yuku.create_scienti_identified_works(
+            release_name=release_name, run_name=f"{self.run_name}_identified",
+            target_collection=self.names["identified_works"], expected_count_run=count_run)
+
     def _cleanup(self) -> dict[str, Any]:
+        release_name = f"release_{self.config['snapshot_tag']}_kahi"
+        release = self.db.scienti_final_release_publications.find_one({"_id": release_name}) or {}
+        retention = EntityRetention(self.db)
+        with retention.lock():
+            adopt_published_history(self.db)
+            pointer = promote_release(self.db, release,
+                identified=self.names["identified_works"] if self.config["processing"].get("generate_identified_works", True) else "")
         if not self.config["processing"].get("cleanup_transient", True):
-            return {"status": "skipped_by_configuration", "removed": []}
-        derived = [
-            self.names[key]
-            for key in (
-                "cvlac_normalized",
-                "gruplac_normalized",
-                "projects_graph",
-                "patents_graph",
-                "events_snapshot",
-                "base_graph",
-                "measured_products",
-                "measurement_links",
-                "projects_measurement_links",
-                "patents_measurement_links",
-                "events_measurement_links",
-            )
-        ]
-        release_name = f"release_{self.config['snapshot_tag']}"
-        publications = self.db["scienti_final_release_publications"]
-        current = publications.find_one({"_id": "current"}) or {}
-        if current.get("current_release") == release_name:
-            previous_name = str(current.get("previous_release") or "")
-            previous = publications.find_one({"_id": previous_name}) or {}
-            current_finals = {
-                self.names[key]
-                for key in (
-                    "final_graph",
-                    "projects_final",
-                    "patents_final",
-                    "events_final",
-                )
-            }
-            derived.extend(
-                name
-                for name in (previous.get("collections") or {}).values()
-                if name and name not in current_finals
-            )
-        protected = [
-            self.names[key]
-            for key in (
-                "all_researchers",
-                "directory_pages",
-                "recognized_researchers",
-                "recognized_groups",
-                "cvlac_seed_raw",
-                "cvlac_raw",
-                "gruplac_raw",
-                "gruplac_downloads",
-                "final_graph",
-                "projects_final",
-                "patents_final",
-                "events_final",
-            )
-        ]
-        entity_publications = self.db["scienti_entity_publications"]
-        current_entities = entity_publications.find_one({"_id": "current"}) or {}
-        current_entity_destinations = {
-            str(name)
-            for name in (current_entities.get("destinations") or {}).values()
-            if str(name)
-        }
-        protected.extend(sorted(current_entity_destinations))
-        previous_entity_run = str(current_entities.get("previous_run_name") or "")
-        previous_entities = (
-            entity_publications.find_one(
-                {"_id": previous_entity_run, "record_type": "release"}
-            )
-            if previous_entity_run
-            else {}
-        ) or {}
-        derived.extend(
-            name
-            for name in (previous_entities.get("destinations") or {}).values()
-            if name and name not in current_entity_destinations
-        )
-        for dataset in self.config["open_data"]["datasets"].values():
-            protected.extend(
-                (dataset["data_collection"], dataset["metadata_collection"])
-            )
-        release_cleanup = self.yuku.cleanup_scienti_final_release(
-            cleanup_name=f"cleanup_{self.config['snapshot_tag']}",
-            release_name=release_name,
-            candidates=derived,
-            protected=protected,
-            reset_entity_publication=False,
-        )
-        candidates = []
-        verify_run = f"{self.run_name}_gruplac_verify"
-        if self.config["processing"].get("verify_incomplete_gruplac", True):
-            candidates.extend(
-                f"{verify_run}_{suffix}"
-                for suffix in ("targets", "raw", "downloads", "results")
-            )
-        candidates.extend(
-            (
-                f"{self.names['cvlac_normalized']}_errors",
-                f"{self.names['gruplac_normalized']}_errors",
-            )
-        )
-        removed = []
-        retained_nonempty = []
-        for name in candidates:
-            if name not in self.db.list_collection_names():
-                continue
-            count = self.db[name].count_documents({})
-            is_verification_artifact = name.startswith(f"{verify_run}_")
-            if is_verification_artifact or count == 0:
-                self.db[name].drop()
-                removed.append(name)
-            else:
-                retained_nonempty.append({"collection": name, "count": count})
-        return {
-            "status": "complete",
-            "release_cleanup": release_cleanup,
-            "removed": removed,
-            "retained_nonempty": retained_nonempty,
-        }
+            return {"status": "published_cleanup_disabled", "current": pointer, "removed": []}
+        return {"status": "complete", "current": pointer, "retention": retention.cleanup()}
 
     def run(
         self,
@@ -1085,6 +1099,7 @@ class ScientiFullPipeline:
             "cvlac_download": self._cvlac_download,
             "cvlac_normalize": self._cvlac_normalize,
             "cvlac_audit": self._cvlac_audit,
+            "doi_reconciliation": self._doi_reconciliation,
             "entities_normalize": self._entities_normalize,
             "projects_semantic_audit": self._projects_semantic_audit,
             "works_semantic_audit": lambda: self._auxiliary_semantic_audit("works"),
@@ -1107,6 +1122,10 @@ class ScientiFullPipeline:
             "events_final": lambda: self._final_measurement_entity("events"),
             "bibliographic_audit": self._bibliographic_audit,
             "final_release": self._final_release,
+            "affiliations_final": self._affiliations_final,
+            "persons_final": self._persons_final,
+            "kahi_release": self._kahi_release,
+            "identified_works": self._identified_works,
             "cleanup": self._cleanup,
         }
         self._acquire_lock()

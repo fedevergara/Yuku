@@ -207,7 +207,7 @@ class ScientiEntityVersionComparator:
             old_version == "scienti-entity-normalizer-v3"
             and new_version == "scienti-entity-normalizer-v4"
             and old_router == "scienti-exact-router-v4"
-            and new_router == "scienti-exact-router-v5"
+            and new_router in {"scienti-exact-router-v5", "scienti-exact-router-v6"}
         ):
             self.transition_profile = "catalog_routing_v4"
             old_general_works = self.db[self.old_destinations["works"]].count_documents(
@@ -218,9 +218,15 @@ class ScientiEntityVersionComparator:
                     "catalog routing transition requires v3 without general works"
                 )
         elif (
-            old_version == new_version == ENTITY_NORMALIZER_VERSION
+            (old_version, new_version) in {
+                ("scienti-entity-normalizer-v4", "scienti-entity-normalizer-v4"),
+                ("scienti-entity-normalizer-v4", ENTITY_NORMALIZER_VERSION),
+                (ENTITY_NORMALIZER_VERSION, ENTITY_NORMALIZER_VERSION),
+            }
             and old_router
-            and old_router == new_router
+            and (old_router == new_router or (
+                old_router in {"scienti-exact-router-v5", "scienti-exact-router-v6"}
+                and new_router in {"scienti-exact-router-v6", "minciencias-exact-router-v7"}))
         ):
             self.transition_profile = "snapshot_refresh"
         self.config = {
@@ -614,7 +620,10 @@ class ScientiEntityVersionComparator:
         if rule in CATALOG_PATENT_RULES:
             return "Patente"
         if rule == "cvlac_production_channel":
-            return classify_target_category(section, product_type)
+            mapped = classify_target_category(section, product_type)
+            if not mapped and self.config.get("new_normalizer_version") != ENTITY_NORMALIZER_VERSION:
+                mapped = classify_target_category(section, section)
+            return mapped
         if rule in {
             "gruplac_directed_work_channel",
             "gruplac_exact_work_ip_type",
@@ -623,20 +632,22 @@ class ScientiEntityVersionComparator:
             return classify_gruplac_product(product_type, section)
         return ""
 
-    @staticmethod
-    def _native_type(occurrence: dict[str, Any]) -> dict[str, Any]:
+    def _native_type(self, occurrence: dict[str, Any], entity="works") -> dict[str, Any]:
+        from yuku.scraping_type_catalog import classification_context
+        value, parent = classification_context({**(occurrence.get("metadata") or {}),
+            "product_type": occurrence.get("product_type"), "source_section": occurrence.get("source_section")}, entity=entity)
+        current = self.config.get("new_normalizer_version") == ENTITY_NORMALIZER_VERSION
         return {
-            "provenance": "scienti",
-            "source": "scienti",
-            "type": str(occurrence.get("product_type") or ""),
+            "provenance": "minciencias" if current else "scienti",
+            "source": "minciencias" if current else "scienti",
+            "type": value if current else str(occurrence.get("product_type") or ""),
             "level": 1,
-            "parent": str(occurrence.get("source_section") or "") or None,
+            "parent": (parent if current else str(occurrence.get("source_section") or "")) or None,
         }
 
-    @staticmethod
-    def _impactu_type(value: str) -> dict[str, str]:
+    def _impactu_type(self, value: str) -> dict[str, str]:
         return {
-            "provenance": "scienti",
+            "provenance": "minciencias" if self.config.get("new_normalizer_version") == ENTITY_NORMALIZER_VERSION else "scienti",
             "source": "impactu",
             "type": value,
         }
@@ -655,7 +666,7 @@ class ScientiEntityVersionComparator:
             occurrence_id = str(occurrence.get("id") or identifier)
             values: list[dict[str, Any]] = []
             if native:
-                values.append(self._native_type(occurrence))
+                values.append(self._native_type(occurrence, entity))
             impactu_type = self._expected_impactu_type(entity, occurrence)
             if not impactu_type:
                 self._finding(
@@ -698,6 +709,9 @@ class ScientiEntityVersionComparator:
                 native=baseline is None,
             )
         )
+        if self.config["new_router_version"] in {"scienti-exact-router-v6", "minciencias-exact-router-v7"}:
+            from yuku.scienti_types import validate_types
+            expected, _ = validate_types(expected, entity=entity, normalize_provider=self.config.get("new_normalizer_version") == ENTITY_NORMALIZER_VERSION)
         expected_counter = self._type_counter(expected)
         expected_counter = Counter({key: 1 for key in expected_counter})
         actual_counter = self._type_counter(document.get("types") or [])
@@ -856,13 +870,13 @@ class ScientiEntityVersionComparator:
         identifier = str(document.get("_id") or "")
         metadata = document.get("source_metadata") or {}
         self.metrics["works"]["catalog_added_documents"] += 1
-        if metadata.get("normalizer_version") != "scienti-entity-normalizer-v4":
+        if metadata.get("normalizer_version") != self.config["new_normalizer_version"]:
             self._finding(
                 "works", "invalid_catalog_work_normalizer", identifier,
                 metadata.get("normalizer_version"),
             )
         if (
-            metadata.get("router_version") != "scienti-exact-router-v5"
+            metadata.get("router_version") != self.config["new_router_version"]
             or metadata.get("type_catalog_version") != IMPACTU_CATALOG.version
             or metadata.get("type_catalog_sha256") != IMPACTU_CATALOG.source_sha256
         ):
@@ -1092,7 +1106,7 @@ class ScientiEntityVersionComparator:
                 self.metrics[entity]["old_normalizer_version_verified"] += 1
         elif old_version is not None:
             self._finding(entity, "unexpected_old_normalizer_version", identifier, old_version)
-        if new_version != ENTITY_NORMALIZER_VERSION:
+        if new_version != (self.config["new_normalizer_version"] or ENTITY_NORMALIZER_VERSION):
             self._finding(entity, "invalid_new_normalizer_version", identifier, new_version)
         else:
             self.metrics[entity]["normalizer_version_verified"] += 1
@@ -1144,11 +1158,21 @@ class ScientiEntityVersionComparator:
         )
         old = _next(old_cursor)
         new = _next(new_cursor)
+        last_type_checked = None
         processed_since_save = 0
         current_id = last_id
         while old is not None or new is not None:
             old_id = str(old.get("_id")) if old is not None else None
             new_id = str(new.get("_id")) if new is not None else None
+            if (new is not None and new_id != last_type_checked
+                    and self.config.get("new_normalizer_version") == ENTITY_NORMALIZER_VERSION):
+                from yuku.scraping_type_catalog import catalog_identity
+                from yuku.scienti_types import type_anomalies
+                if type_anomalies(new.get("types"), entity=entity):
+                    self._finding(entity, "invalid_published_types", new_id)
+                if (new.get("source_metadata") or {}).get("scraping_type_catalog") != catalog_identity():
+                    self._finding(entity, "invalid_scraping_catalog_provenance", new_id)
+                last_type_checked = new_id
             if new is None or (old is not None and old_id < new_id):
                 current_id = old_id or current_id
                 if self.transition_profile == "snapshot_refresh":

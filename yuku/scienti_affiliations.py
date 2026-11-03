@@ -18,8 +18,11 @@ AFFILIATION_RUNS = "scienti_affiliation_materialization_runs"
 AFFILIATION_AUDITS = "scienti_affiliation_materialization_audits"
 AFFILIATION_PUBLICATIONS = "scienti_affiliation_publications"
 GRUPLAC_AUDITS = "scienti_gruplac_normalization_audits"
-MATERIALIZER_VERSION = "scienti-affiliations-v1"
+MATERIALIZER_VERSION = "scienti-affiliations-v3"
 REQUIRED_GRUPLAC_PARSER_VERSION = "3.2.0"
+SUPPORTED_GRUPLAC_PARSER_VERSIONS = {
+    REQUIRED_GRUPLAC_PARSER_VERSION, "3.3.0", "3.4.0", "3.4.1", "3.5.0"
+}
 GROUP_CODE_RE = re.compile(r"COL\d{7}")
 NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,79}")
 COLLECTION_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,119}")
@@ -69,6 +72,26 @@ def normalized_text(value: Any) -> str:
     text = unicodedata.normalize("NFKD", clean_text(value))
     text = text.encode("ascii", "ignore").decode("ascii").casefold()
     return " ".join(re.sub(r"[^a-z0-9]+", " ", text).split())
+
+
+def split_institution_names(value: Any) -> list[str]:
+    """Split institutional lists, preserving punctuation inside parentheses."""
+    parts, buffer = [], []
+    depth = 0
+    for char in clean_text(value):
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth = max(0, depth - 1)
+        if char in ";|" and depth == 0:
+            if name := clean_text("".join(buffer)):
+                parts.append(name)
+            buffer = []
+        else:
+            buffer.append(char)
+    if name := clean_text("".join(buffer)):
+        parts.append(name)
+    return parts
 
 
 def group_code(value: Any) -> str:
@@ -245,18 +268,18 @@ def build_group_affiliation(
     relations: list[dict[str, Any]] = []
     institution_names: list[str] = []
     for item in profile.get("institutions", []) or []:
-        append_unique(institution_names, clean_text(item.get("name")), normalized_text)
+        for value in split_institution_names(item.get("name")):
+            append_unique(institution_names, value, normalized_text)
     for row in rows:
-        for value in clean_text(row.get("inst_aval")).split("|"):
-            append_unique(institution_names, clean_text(value), normalized_text)
+        for value in split_institution_names(row.get("inst_aval")):
+            append_unique(institution_names, value, normalized_text)
     historical = sorted(
         recognized.get("instituciones_historicas", []) or [],
         key=lambda item: int(item.get("año") or 0), reverse=True,
     )
     for item in historical:
-        append_unique(
-            institution_names, clean_text(item.get("institucion")), normalized_text
-        )
+        for value in split_institution_names(item.get("institucion")):
+            append_unique(institution_names, value, normalized_text)
     for name in institution_names:
         relations.append({"id": "", "name": name, "types": []})
 
@@ -301,7 +324,7 @@ def build_group_affiliation(
                     "lang": "es", "name": canonical_name}] if canonical_name else []),
         "aliases": unique_names[1:],
         "abbreviations": [],
-        "types": [{"source": "scienti" if profile else "minciencias", "type": "group"}],
+        "types": [{"source": "minciencias", "type": "group"}],
         "year_established": established,
         "status": [],
         "relations": relations,
@@ -362,6 +385,7 @@ class ScientiAffiliationMaterializer:
         batch_size: int = 500,
         progress_every: int = 1000,
         expected_groups: int = 0,
+        publish_pointer: bool = True,
     ):
         if not NAME_RE.fullmatch(run_name or ""):
             raise ValueError("invalid affiliation materialization run name")
@@ -388,6 +412,7 @@ class ScientiAffiliationMaterializer:
         self.batch_size = batch_size
         self.progress_every = progress_every
         self.expected_groups = expected_groups
+        self.publish_pointer = publish_pointer
         self.runs = db[AFFILIATION_RUNS]
         self.config = {
             "materializer_version": MATERIALIZER_VERSION,
@@ -398,6 +423,8 @@ class ScientiAffiliationMaterializer:
             "target_collection": target_collection,
             "expected_groups": expected_groups,
         }
+        if not publish_pointer:
+            self.config["publish_pointer"] = False
         self.config_hash = sha256(_canonical_json(self.config)).hexdigest()
 
     def _validate_source_audit(self) -> None:
@@ -414,7 +441,7 @@ class ScientiAffiliationMaterializer:
             raise RuntimeError("GrupLAC source audit is not passed")
         if config.get("normalized_collection") != self.gruplac_collection:
             raise RuntimeError("GrupLAC audit does not prove the selected collection")
-        if config.get("expected_parser_version") != REQUIRED_GRUPLAC_PARSER_VERSION:
+        if config.get("expected_parser_version") not in SUPPORTED_GRUPLAC_PARSER_VERSIONS:
             raise RuntimeError("GrupLAC audit does not prove the required parser version")
         audited_recognized = config.get("recognized_groups_collection")
         if audited_recognized and audited_recognized != self.recognized_collection:
@@ -492,7 +519,7 @@ class ScientiAffiliationMaterializer:
             code = group_code(item.get("group_code") or item.get("_id"))
             if not code:
                 invalid["gruplac_invalid_group_code"] += 1
-            elif (item.get("parser") or {}).get("version") != REQUIRED_GRUPLAC_PARSER_VERSION:
+            elif (item.get("parser") or {}).get("version") not in SUPPORTED_GRUPLAC_PARSER_VERSIONS:
                 invalid["gruplac_parser_version_mismatch"] += 1
             elif code in profiles:
                 invalid["gruplac_duplicate_group_code"] += 1
@@ -530,6 +557,10 @@ class ScientiAffiliationMaterializer:
                 "invalid_relation": any(
                     not clean_text(value.get("name"))
                     or clean_text(value.get("id"))
+                    for value in item.get("relations", [])
+                ),
+                "compound_institution_relation": any(
+                    len(split_institution_names(value.get("name"))) > 1
                     for value in item.get("relations", [])
                 ),
             }
@@ -580,6 +611,7 @@ class ScientiAffiliationMaterializer:
         return audit
 
     def _publish(self, summary: dict[str, Any], audit: dict[str, Any]) -> None:
+        from yuku.minciencias_publication import publish_current
         publications = self.db[AFFILIATION_PUBLICATIONS]
         current = publications.find_one({"_id": "current"}) or {}
         publication = {
@@ -590,13 +622,13 @@ class ScientiAffiliationMaterializer:
             "source_fingerprints": deepcopy(audit["source_fingerprints"]),
         }
         publications.replace_one({"_id": self.run_name}, publication, upsert=True)
-        publications.replace_one(
-            {"_id": "current"},
+        if not self.publish_pointer:
+            return
+        publish_current(self.db, AFFILIATION_PUBLICATIONS, "current",
             {"_id": "current", "current_run": self.run_name,
              "previous_run": clean_text(current.get("current_run")),
              "collection": self.target_collection, "audit": audit["_id"],
              "published_at": publication["published_at"]},
-            upsert=True,
         )
 
     def run(self) -> dict[str, Any]:

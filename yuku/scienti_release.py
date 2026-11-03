@@ -10,6 +10,7 @@ from typing import Any, Iterable
 from pymongo import UpdateOne
 
 from yuku.scienti_persons import canonical_doi, cod_rh
+from yuku.minciencias_publication import publish_current, register_release
 
 
 CORE_ENTITIES = ("works", "projects", "patents", "events")
@@ -59,6 +60,18 @@ class ScientiFinalReleaseManager:
     def __init__(self, db):
         self.db = db
 
+    def _store_audit(self, audit):
+        """Keep proofs immutable once a named version has been published."""
+        publication = self.db[FINAL_RELEASE_PUBLICATIONS].find_one({"_id": audit["release_name"]}) or {}
+        if publication.get("status") == "published":
+            previous = self.db[FINAL_RELEASE_AUDITS].find_one({"_id": publication.get("audit")}) or {}
+            comparable = lambda value: {key: item for key, item in value.items() if key != "audited_at"}
+            if publication.get("audit") != audit["_id"] or comparable(previous) != comparable(audit):
+                raise RuntimeError("published release proof changed; use a new version")
+            return previous
+        self.db[FINAL_RELEASE_AUDITS].replace_one({"_id": audit["_id"]}, audit, upsert=True)
+        return audit
+
     def publish(
         self,
         *,
@@ -66,6 +79,7 @@ class ScientiFinalReleaseManager:
         collections: dict[str, str],
         materialization_runs: dict[str, str],
         audit_name: str = "",
+        publish_pointer: bool = True,
     ) -> dict[str, Any]:
         release_name = _name(release_name, "release_name")
         audit_name = _name(
@@ -107,6 +121,10 @@ class ScientiFinalReleaseManager:
                     not isinstance(expected, int) or expected != actual
                 ),
             }
+            if not missing:
+                from yuku.scienti_types import type_anomalies
+                entity_checks["invalid_types"] = sum(type_anomalies(item.get("types"), entity=entity)
+                    for item in self.db[collection].find({}, {"types": 1}))
             checks.update(
                 {
                     f"{entity}_{key}": value
@@ -132,12 +150,14 @@ class ScientiFinalReleaseManager:
             "critical_counts": checks,
             "critical_anomalies": critical,
         }
-        self.db[FINAL_RELEASE_AUDITS].replace_one(
-            {"_id": audit_name}, audit, upsert=True
-        )
+        audit = self._store_audit(audit)
         if critical:
             raise RuntimeError(f"final release audit failed: {checks}")
         publications = self.db[FINAL_RELEASE_PUBLICATIONS]
+        existing = publications.find_one({"_id": release_name}) or {}
+        if existing and (existing.get("collections") != collections
+                         or existing.get("materialization_runs") != materialization_runs):
+            raise RuntimeError("immutable core release already exists differently")
         current = publications.find_one({"_id": "current"}) or {}
         if current.get("current_release") == release_name:
             existing = publications.find_one({"_id": release_name}) or {}
@@ -149,7 +169,7 @@ class ScientiFinalReleaseManager:
                     "current release exists with different collections or runs"
                 )
             return existing
-        publication = {
+        publication = existing or {
             "_id": release_name,
             "status": "published",
             "published_at": published_at,
@@ -160,8 +180,9 @@ class ScientiFinalReleaseManager:
         publications.replace_one(
             {"_id": release_name}, publication, upsert=True
         )
-        publications.replace_one(
-            {"_id": "current"},
+        if not publish_pointer:
+            return publication
+        publish_current(self.db, FINAL_RELEASE_PUBLICATIONS, "current",
             {
                 "_id": "current",
                 "current_release": release_name,
@@ -170,8 +191,8 @@ class ScientiFinalReleaseManager:
                 "audit": audit_name,
                 "collections": deepcopy(collections),
             },
-            upsert=True,
         )
+        register_release(self.db, publication)
         return publication
 
     def _core_release(self, release_name: str) -> dict[str, Any]:
@@ -348,6 +369,7 @@ class ScientiFinalReleaseManager:
                 projection = {"authors.id": 1, "groups.id": 1}
                 if entity == "works":
                     projection["doi"] = 1
+                    projection["types"] = 1
                 doi_batch: list[str] = []
                 scanned = 0
                 for item in self.db[collections[entity]].find({}, projection):
@@ -380,6 +402,11 @@ class ScientiFinalReleaseManager:
                         checks[key] = checks.get(key, 0) + 1
                         self._example(examples, key, {"entity": item["_id"], "id": raw})
                     if entity == "works":
+                        from yuku.scienti_types import type_anomalies
+                        invalid = type_anomalies(item.get("types"))
+                        if invalid:
+                            checks["works_invalid_types"] = checks.get("works_invalid_types", 0) + invalid
+                            self._example(examples, "works_invalid_types", item["_id"])
                         doi = canonical_doi(item.get("doi"))
                         if item.get("doi") and not doi:
                             key = "works_excluded_invalid_dois"
@@ -418,6 +445,7 @@ class ScientiFinalReleaseManager:
         audit_name: str = "",
         batch_size: int = 1000,
         progress_every: int = 100000,
+        publish_pointer: bool = True,
     ) -> dict[str, Any]:
         """Validate all cross-references and atomically publish six entities."""
         release_name = _name(release_name, "release_name")
@@ -519,9 +547,7 @@ class ScientiFinalReleaseManager:
             "quality_counts": quality_counts,
             "examples": examples,
         }
-        self.db[FINAL_RELEASE_AUDITS].replace_one(
-            {"_id": audit_name}, audit, upsert=True
-        )
+        audit = self._store_audit(audit)
         if critical:
             raise RuntimeError(f"six-entity release audit failed: {all_checks}")
         publications = self.db[FINAL_RELEASE_PUBLICATIONS]
@@ -545,13 +571,14 @@ class ScientiFinalReleaseManager:
         }
         if not existing:
             publications.insert_one(publication)
-        if current.get("current_release") != release_name:
-            publications.replace_one({"_id": "current"}, {
+        if publish_pointer and current.get("current_release") != release_name:
+            publish_current(self.db, FINAL_RELEASE_PUBLICATIONS, "current", {
                 "_id": "current", "current_release": release_name,
                 "previous_release": str(current.get("current_release") or ""),
                 "published_at": published_at, "audit": audit_name,
                 "entity_count": 6, "collections": deepcopy(collections),
-            }, upsert=True)
+            })
+            register_release(self.db, publication)
         return publication
 
     def cleanup(

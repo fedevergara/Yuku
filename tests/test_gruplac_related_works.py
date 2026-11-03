@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 import unittest
 
 from bs4 import BeautifulSoup
@@ -7,6 +9,81 @@ from yuku.gruplac_related_works import parse_product_row
 
 
 class GruplacRelatedWorksParsingTest(unittest.TestCase):
+    def test_printed_content_location_matches_preserved_source_html(self):
+        fixtures = Path(__file__).parent / "fixtures/gruplac_publication_place"
+        cases = json.loads((fixtures / "cases.json").read_text())
+        for case in cases:
+            with self.subTest(title=case["title"]):
+                row = BeautifulSoup((fixtures / case["file"]).read_text(), "lxml").find("tr")
+                record = parse_product_row(row, case["section"])
+                self.assertEqual(record["title"], case["title"])
+                self.assertEqual(record["publication_place"], case["publication_place"])
+                self.assertEqual(record["country"], "")
+                self.assertIn("Lugar de publicación:", record["raw_text"])
+
+    def test_empty_or_missing_printed_place_does_not_fall_back_to_prefix(self):
+        for prefix in ("Colombia", "2016", "2016-02-02", "2016/02/02"):
+            for label in ("", "Lugar de publicación: , "):
+                with self.subTest(prefix=prefix, label=label):
+                    row = BeautifulSoup(
+                        '<tr><td></td><td>1.- <strong>Manual</strong> : Manual verificable<br/>'
+                        f'{prefix}, Ambito: Nacional, {label}Sitio web: https://example.org '
+                        'Autores: ANA PERSONA</td></tr>', "lxml"
+                    ).find("tr")
+                    record = parse_product_row(row, "Generación de Contenido Impreso")
+                    self.assertEqual(record["publication_place"], "")
+                    self.assertEqual(record["country"], "Colombia" if prefix == "Colombia" else "")
+                    self.assertEqual(record["authors"], ["ANA PERSONA"])
+
+    def test_explicit_place_overrides_country_and_stops_before_next_field(self):
+        for spelling in ("Lugar de publicación", "LUGAR DE PUBLICACION"):
+            row = BeautifulSoup(
+                '<tr><td></td><td>1.- <strong>Libro :</strong> Libro verificable<br/>'
+                f'Colombia, 2024, {spelling}: Bogotá, D.C., Sitio web: https://example.org '
+                'Autores: ANA PERSONA</td></tr>', "lxml"
+            ).find("tr")
+            record = parse_product_row(row, "Libros publicados")
+            self.assertEqual(record["country"], "Colombia")
+            self.assertEqual(record["publication_place"], "Bogotá, D.C.")
+            self.assertEqual(record["year"], 2024)
+
+    def test_explicit_empty_place_does_not_use_legacy_book_country(self):
+        row = BeautifulSoup(
+            '<tr><td></td><td>1.- <strong>Libro :</strong> Libro verificable<br/>'
+            'Colombia, 2024, Lugar de publicación: Sitio web: https://example.org '
+            'Autores: ANA PERSONA</td></tr>', "lxml"
+        ).find("tr")
+        record = parse_product_row(row, "Libros publicados")
+        self.assertEqual(record["country"], "Colombia")
+        self.assertEqual(record["publication_place"], "")
+
+    def test_identifier_embedded_in_declared_place_is_not_a_field_boundary(self):
+        place = "Centro de investigaciones Universidad Libre. ISBN: 978-958-8755-68-7"
+        row = BeautifulSoup(
+            '<tr><td></td><td>1.- <strong>Manual</strong> : Manual verificable<br/>'
+            f'2024-01-02, Ambito: Nacional, Lugar de publicación: {place}, '
+            'Sitio web: https://example.org Autores: ANA PERSONA</td></tr>', "lxml"
+        ).find("tr")
+        record = parse_product_row(row, "Generación de Contenido Impreso")
+        self.assertEqual(record["publication_place"], place)
+        self.assertNotIn("bibliographic_findings", record)
+
+    def test_invalid_explicit_place_is_preserved_as_evidence(self):
+        for place in ("2023 Boletín informativo vol. 10", "ISSN:2745-0570", "ISBN 978-958-15-0354-4"):
+            with self.subTest(place=place):
+                row = BeautifulSoup(
+                    '<tr><td></td><td>1.- <strong>Boletín</strong> : Boletín verificable<br/>'
+                    f'2023-05-25, Ambito: Nacional, Lugar de publicación: {place}, '
+                    'Sitio web: https://example.org Autores: ANA PERSONA</td></tr>', "lxml"
+                ).find("tr")
+                record = parse_product_row(row, "Generación de Contenido Impreso")
+                self.assertEqual(record["publication_place"], "")
+                self.assertEqual(record["country"], "")
+                self.assertEqual(record["bibliographic_findings"], [{
+                    "reason": "invalid_publication_place", "field": "publication_place", "raw_value": place,
+                }])
+                self.assertIn(place, record["raw_text"])
+
     def test_publisher_validation_matches_all_observed_audit_values(self):
         legitimate = [
             "Voluntad",
@@ -139,6 +216,9 @@ class GruplacRelatedWorksParsingTest(unittest.TestCase):
         self.assertEqual(record["pages"], "")
         self.assertEqual(record["authors"], ["ANA PERSONA"])
 
+        self.assertEqual(record["country"], "Colombia")
+        self.assertEqual(record["publication_place"], "Colombia")
+
     def test_timeline_sections_keep_title_period_and_description_separate(self):
         sections = [
             "Estrategias Pedagógicas para el fomento a la CTI",
@@ -163,7 +243,7 @@ class GruplacRelatedWorksParsingTest(unittest.TestCase):
                 record = parse_product_row(row, section)
                 self.assertEqual(record["title"], "Nombre real de la estrategia")
                 self.assertEqual(record["product_type"], section)
-                self.assertEqual(record["type_impactu"], section)
+                self.assertEqual(record["type_impactu"], "Innovación y apropiación")
                 self.assertEqual(record["start_date"], "Marzo 2016")
                 self.assertEqual(record["end_date"], "Septiembre 2018")
                 self.assertEqual(record["year"], 2018)
@@ -187,9 +267,11 @@ class GruplacRelatedWorksParsingTest(unittest.TestCase):
         ).find("tr")
         record = parse_product_row(row, "Artículos publicados")
         self.assertEqual(record["title"], "Un artículo verificable")
-        self.assertEqual(record["type_impactu"], "Articulo de revista")
+        self.assertEqual(record["type_impactu"], "Artículo de revista")
         self.assertEqual(record["year"], 2024)
         self.assertEqual(record["authors"], ["ANA PERSONA"])
+        self.assertEqual(record["country"], "Colombia")
+        self.assertEqual(record["publication_place"], "Colombia")
 
     def test_chapter_extracts_book_publisher_and_pages(self):
         row = BeautifulSoup(

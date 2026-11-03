@@ -13,6 +13,8 @@ from typing import Any, Iterable
 
 from pymongo import ASCENDING, ReplaceOne
 
+from yuku.scraping_type_catalog import catalog_identity
+
 from yuku.cvlac_work_graph import is_generic_title
 from yuku.scienti_entities import (
     ENTITY_AUDITS,
@@ -85,7 +87,7 @@ def _project_type(document: dict[str, Any]) -> str:
         exact_key(value.get("type"))
         for value in document.get("types") or []
         if isinstance(value, dict)
-        and value.get("source") == "scienti"
+        and value.get("source") in {"scienti", "minciencias"}
         and value.get("level") == 1
         and value.get("type")
     }
@@ -279,6 +281,7 @@ class ScientiExactEntityGraphBuilder:
         self.review_stored = 0
         self.config = {
             "graph_version": self.version,
+            "scraping_type_catalog": catalog_identity(),
             "entity": entity,
             "source_collection": source_collection,
             "target_collection": target_collection,

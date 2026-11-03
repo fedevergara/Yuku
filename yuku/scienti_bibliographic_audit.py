@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from yuku.cvlac_related_works import (
+    SUSPICIOUS_PUBLICATION_PLACE_RE,
     SUSPICIOUS_PUBLISHER_RE,
     VALID_PAGES_RE,
     norm_text,
@@ -25,10 +26,6 @@ SUSPICIOUS_VOLUME_RE = re.compile(
 SUSPICIOUS_EDITION_RE = re.compile(
     r"\b(?:ISBN|ISSN|Serie|Autores?|Autor del documento original|"
     r"Medio de divulgaci[oó]n|Idiomas?)\s*:",
-    re.IGNORECASE,
-)
-SUSPICIOUS_PUBLICATION_PLACE_RE = re.compile(
-    r"^(?:(?:19|20)\d{2}|(?:ISBN|ISSN|Autores?|Edici[oó]n|Serie)\b)",
     re.IGNORECASE,
 )
 # MongoDB's \w/\W semantics reject accented letters, so use an explicit
@@ -64,7 +61,8 @@ class ScientiBibliographicEnrichmentAuditor:
         base = self.db[base_collection]
         final = self.db[final_collection]
         publisher_query = {
-            "bibliographic_info.scienti.fields.publisher.status": "consistent"
+            "bibliographic_info.scienti.fields.publisher.status": "consistent",
+            "bibliographic_info.scienti.context_type": {"$ne": "journal"},
         }
         book_query = {
             "bibliographic_info.scienti.fields.book_title.status": "consistent"
@@ -75,6 +73,9 @@ class ScientiBibliographicEnrichmentAuditor:
         counts = {
             "base_works": base.count_documents({}),
             "final_works": final.count_documents({}),
+            "base_consistent_journals": base.count_documents({"bibliographic_info.scienti.fields.journal_name.status": "consistent"}),
+            "final_consistent_journals": final.count_documents({"bibliographic_info.scienti.fields.journal_name.status": "consistent"}),
+            "journal_conflicts_preserved": final.count_documents({"bibliographic_info.scienti.fields.journal_name.status": "conflict"}),
             "base_consistent_publishers": base.count_documents(publisher_query),
             "final_consistent_publishers": final.count_documents(publisher_query),
             "base_consistent_book_titles": base.count_documents(book_query),
@@ -104,6 +105,19 @@ class ScientiBibliographicEnrichmentAuditor:
         }
         fields = "bibliographic_info.scienti.fields"
         checks = {
+            "journal_loss": abs(counts["base_consistent_journals"] - counts["final_consistent_journals"]),
+            "consistent_journal_without_source": final.count_documents({
+                "bibliographic_info.scienti.fields.journal_name.status": "consistent",
+                "$or": [{"source.name": {"$exists": False}}, {"source.name": ""}],
+            }),
+            "journal_name_mismatch": final.count_documents({
+                "bibliographic_info.scienti.fields.journal_name.status": "consistent",
+                "$expr": {"$ne": ["$bibliographic_info.scienti.fields.journal_name.value", "$source.name"]},
+            }),
+            "conflicted_journal_promoted": final.count_documents({
+                "bibliographic_info.scienti.fields.journal_name.status": "conflict",
+                "source.types.type": "journal",
+            }),
             "materialization_not_complete": int(final_run.get("status") != "complete"),
             "materialization_critical": int(summary.get("critical_anomalies") or 0),
             "final_count_mismatch": abs(

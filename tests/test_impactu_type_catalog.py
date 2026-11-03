@@ -1,5 +1,7 @@
 import unittest
 from collections import Counter
+from hashlib import sha256
+from importlib.resources import files
 
 from kahi_impactu_type_catalog import get_impactu_catalog
 from yuku.scienti_routing import route_minciencias
@@ -8,12 +10,13 @@ from yuku.scienti_routing import route_minciencias
 class ImpactuTypeCatalogTest(unittest.TestCase):
     def test_catalog_is_complete_versioned_and_reproducible(self):
         catalog = get_impactu_catalog()
-        self.assertEqual(catalog.version, "1.1.0")
+        self.assertEqual(catalog.version, "1.2.0")
         self.assertEqual(len(catalog), 800)
         self.assertEqual(
             catalog.source_sha256,
-            "7288727e73be698acaf6ba81799d36d56b37f9265b163a6e9a85f4489c0ecb91",
+            sha256(files("kahi_impactu_type_catalog").joinpath("data/Tipos_ImpactU_Definitivo.xlsx").read_bytes()).hexdigest(),
         )
+        self.assertEqual(len(catalog.payload["scraping_mappings"]), 180)
         self.assertEqual(
             Counter(value["entity"] for value in catalog.payload["mappings"]),
             {"works": 731, "patents": 33, "projects": 20, "events": 16},

@@ -65,7 +65,7 @@ class ScientiFullGraphGateTest(unittest.TestCase):
         return self.yuku.create_scienti_full_graph(
             run_name="full_run",
             graph_run_name="graph_run",
-            collection="final_graph_v1",
+            collection="minciencias_works_v01_20261009",
             cvlac_related_collection="cvlac_normalized",
             cvlac_audit_name="cvlac_audit",
             gruplac_raw_collection="group_raw",

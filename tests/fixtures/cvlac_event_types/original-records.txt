@@ -1,0 +1,291 @@
+{
+  "0000205818": {
+    "profile_id": "0000205818",
+    "type_impactu": "Evento",
+    "order": 8,
+    "title": "EULAR 2024 European Congress of Rheumatology",
+    "event_type": "Congreso médico internacional Tipo de evento: Congreso",
+    "scope": "Internacional",
+    "profile_name": "Fixture author",
+    "raw_text": "8 Nombre del evento: EULAR 2024 European Congress of Rheumatology Tipo de evento: Congreso médico internacional Tipo de evento: Congreso Ámbito: Internacional Realizado el:2024-06-12 00:00:00.0, 2024-06-15 00:00:00.0 en Viena - Austria Center Vienna Productos asociados Nombre del producto: Lupus nephritis and response to treatment in latin america Tipo de producto: Demás trabajos - Demás trabajos - Póster Instituciones asociadas Nombre de la institución: FUNDACION VALLE DEL LILI Tipo de vinculación Patrocinadora Participantes Nombre: CARLOS ALBERTO CANAS DAVILA Rol en el evento: Ponente",
+    "start_date": "2024-06-12",
+    "end_date": "2024-06-15",
+    "year": 2024,
+    "location": "Viena - Austria Center Vienna",
+    "city": "Viena",
+    "venue": "Austria Center Vienna",
+    "associated_products": [
+      {
+        "name": "Lupus nephritis and response to treatment in latin america",
+        "type": "Demás trabajos - Demás trabajos - Póster"
+      }
+    ],
+    "associated_institutions": [
+      {
+        "name": "FUNDACION VALLE DEL LILI",
+        "linkage": "Patrocinadora"
+      }
+    ],
+    "participants": [
+      {
+        "name": "CARLOS ALBERTO CANAS DAVILA",
+        "role": "Ponente"
+      }
+    ]
+  },
+  "0000086456": {
+    "profile_id": "0000086456",
+    "type_impactu": "Evento",
+    "order": 1,
+    "title": "XIV Congreso Latinoamericano de Geología",
+    "event_type": "Congreso Tipo de evento: Congreso",
+    "scope": "Nacional",
+    "profile_name": "Fixture author",
+    "raw_text": "1 Nombre del evento: XIV Congreso Latinoamericano de Geología Tipo de evento: Congreso Tipo de evento: Congreso Ámbito: Nacional Realizado el:2011-08-31 00:00:00.0, 2011-09-03 00:00:00.0 en MEDELLÍN - Medellin Productos asociados Nombre del producto: Nombre del producto:Primeras evidencias de braquiópodos silúricos de la Sierra del Perijá, Colombia y sus relaciones con las sucesiones metamórficas de bajo grado del Silúrico-Devónico. Implicaciones estratigráficas y tectónicas Tipo de producto: Producción técnica - Presentación de trabajo - Ponencia Instituciones asociadas Nombre de la institución: Sociedad Colombia de Geologia Tipo de vinculación Patrocinadora Participantes Nombre: CARLOS MAURICIO CACERES GUEVARA Rol en el evento: Ponente",
+    "start_date": "2011-08-31",
+    "end_date": "2011-09-03",
+    "year": 2011,
+    "location": "MEDELLÍN - Medellin",
+    "city": "MEDELLÍN",
+    "venue": "Medellin",
+    "associated_products": [
+      {
+        "name": "Nombre del producto:Primeras evidencias de braquiópodos silúricos de la Sierra del Perijá, Colombia y sus relaciones con las sucesiones metamórficas de bajo grado del Silúrico-Devónico. Implicaciones estratigráficas y tectónicas",
+        "type": "Producción técnica - Presentación de trabajo - Ponencia"
+      }
+    ],
+    "associated_institutions": [
+      {
+        "name": "Sociedad Colombia de Geologia",
+        "linkage": "Patrocinadora"
+      }
+    ],
+    "participants": [
+      {
+        "name": "CARLOS MAURICIO CACERES GUEVARA",
+        "role": "Ponente"
+      }
+    ]
+  },
+  "0000587290": {
+    "profile_id": "0000587290",
+    "type_impactu": "Evento",
+    "order": 17,
+    "title": "Cuarto Congreso Internacional de Filosofía del Derecho, Ética y Política",
+    "event_type": "Congreso Tipo de evento: Otro",
+    "scope": "Internacional",
+    "profile_name": "Fixture author",
+    "raw_text": "17 Nombre del evento: Cuarto Congreso Internacional de Filosofía del Derecho, Ética y Política Tipo de evento: Congreso Tipo de evento: Otro Ámbito: Internacional Realizado el:2019-05-05 00:00:00.0, 2019-05-09 00:00:00.0 en BOGOTÁ, D.C. - BOGOTÁ, D. C. Instituciones asociadas Nombre de la institución: UNIVERSIDAD LIBRE DE COLOMBIA Tipo de vinculación Patrocinadora Participantes Nombre: RUBEN ALBERTO DUARTE CUADROS Rol en el evento: Organizador",
+    "start_date": "2019-05-05",
+    "end_date": "2019-05-09",
+    "year": 2019,
+    "location": "BOGOTÁ, D.C. - BOGOTÁ, D. C",
+    "city": "BOGOTÁ, D.C",
+    "venue": "BOGOTÁ, D. C",
+    "associated_products": [],
+    "associated_institutions": [
+      {
+        "name": "UNIVERSIDAD LIBRE DE COLOMBIA",
+        "linkage": "Patrocinadora"
+      }
+    ],
+    "participants": [
+      {
+        "name": "RUBEN ALBERTO DUARTE CUADROS",
+        "role": "Organizador"
+      }
+    ]
+  },
+  "0000100602": {
+    "profile_id": "0000100602",
+    "type_impactu": "Evento",
+    "order": 2,
+    "title": "XII Encuentro Nacional y III Latinoamericano de Estudiantes de Ingeniería Sanitaria, Ambiental y Áreas afines",
+    "event_type": "Encuentro Tipo de evento: Encuentro",
+    "scope": "Internacional",
+    "profile_name": "Fixture author",
+    "raw_text": "2 Nombre del evento: XII Encuentro Nacional y III Latinoamericano de Estudiantes de Ingeniería Sanitaria, Ambiental y Áreas afines Tipo de evento: Encuentro Tipo de evento: Encuentro Ámbito: Internacional Realizado el:2012-11-07 00:00:00.0, 2012-11-10 00:00:00.0 en CALI - Universidad del Valle Instituciones asociadas Nombre de la institución: UNIVERSIDAD DEL VALLE Tipo de vinculación Patrocinadora Participantes Nombre: MARIA TERESA REINA SALGUERO Rol en el evento: Asistente",
+    "start_date": "2012-11-07",
+    "end_date": "2012-11-10",
+    "year": 2012,
+    "location": "CALI - Universidad del Valle",
+    "city": "CALI",
+    "venue": "Universidad del Valle",
+    "associated_products": [],
+    "associated_institutions": [
+      {
+        "name": "UNIVERSIDAD DEL VALLE",
+        "linkage": "Patrocinadora"
+      }
+    ],
+    "participants": [
+      {
+        "name": "MARIA TERESA REINA SALGUERO",
+        "role": "Asistente"
+      }
+    ]
+  },
+  "0000013927": {
+    "profile_id": "0000013927",
+    "type_impactu": "Evento",
+    "order": 13,
+    "title": "I Simposio de Innovación e Investigación en ciencias básicas y aplicadas 2021",
+    "event_type": "Simposio Tipo de evento: Simposio",
+    "scope": "Nacional",
+    "profile_name": "Fixture author",
+    "raw_text": "13 Nombre del evento: I Simposio de Innovación e Investigación en ciencias básicas y aplicadas 2021 Tipo de evento: Simposio Tipo de evento: Simposio Ámbito: Nacional Realizado el:2020-11-18 00:00:00.0, 2020-11-19 00:00:00.0 en CALI - Universidad Santiago de Cali - TecnoacademValleia Productos asociados Nombre del producto: generación de un filtro para purificación de agua a partir de conchas marinas y cascaras de coco en el municipio de Tumaco Tipo de producto: Producción técnica - Presentación de trabajo - Ponencia Instituciones asociadas Nombre de la institución: SENA - Centro Sur Colombiano de Logística Internacional - Regional Nariño Tipo de vinculación Patrocinadora Participantes Nombre: ANDRES FELIPE ACEVEDO RIVERA Rol en el evento: Ponente",
+    "start_date": "2020-11-18",
+    "end_date": "2020-11-19",
+    "year": 2020,
+    "location": "CALI - Universidad Santiago de Cali - TecnoacademValleia",
+    "city": "CALI",
+    "venue": "Universidad Santiago de Cali - TecnoacademValleia",
+    "associated_products": [
+      {
+        "name": "generación de un filtro para purificación de agua a partir de conchas marinas y cascaras de coco en el municipio de Tumaco",
+        "type": "Producción técnica - Presentación de trabajo - Ponencia"
+      }
+    ],
+    "associated_institutions": [
+      {
+        "name": "SENA - Centro Sur Colombiano de Logística Internacional - Regional Nariño",
+        "linkage": "Patrocinadora"
+      }
+    ],
+    "participants": [
+      {
+        "name": "ANDRES FELIPE ACEVEDO RIVERA",
+        "role": "Ponente"
+      }
+    ]
+  },
+  "0001114905": {
+    "profile_id": "0001114905",
+    "type_impactu": "Evento",
+    "order": 6,
+    "title": "IV Congreso Internacional sobre buenas prácticas con TIC",
+    "event_type": "Congreso Ámbito Tipo de evento: Congreso",
+    "scope": "Internacional",
+    "profile_name": "Fixture author",
+    "raw_text": "6 Nombre del evento: IV Congreso Internacional sobre buenas prácticas con TIC Tipo de evento: Congreso Ámbito Tipo de evento: Congreso Ámbito: Internacional Realizado el:2014-09-24 00:00:00.0, 2014-09-26 00:00:00.0 en Guadalajara - Ameca Productos asociados Nombre del producto: Creación de objetos de aprendizaje en la Universidad de Boyacá Tipo de producto: Producción técnica - Presentación de trabajo - Ponencia Instituciones asociadas Nombre de la institución: Universidad De Guadalajara Tipo de vinculación Patrocinadora Participantes Nombre: CARMENZA MONTANEZ TORRES Rol en el evento: Ponente Nombre: EDITH MARCELA RUIZ CANADULCE Rol en el evento: Ponente Nombre: ERIKA MARIA SANDOVAL VALERO Rol en el evento: Ponente",
+    "start_date": "2014-09-24",
+    "end_date": "2014-09-26",
+    "year": 2014,
+    "location": "Guadalajara - Ameca",
+    "city": "Guadalajara",
+    "venue": "Ameca",
+    "associated_products": [
+      {
+        "name": "Creación de objetos de aprendizaje en la Universidad de Boyacá",
+        "type": "Producción técnica - Presentación de trabajo - Ponencia"
+      }
+    ],
+    "associated_institutions": [
+      {
+        "name": "Universidad De Guadalajara",
+        "linkage": "Patrocinadora"
+      }
+    ],
+    "participants": [
+      {
+        "name": "CARMENZA MONTANEZ TORRES",
+        "role": "Ponente"
+      },
+      {
+        "name": "EDITH MARCELA RUIZ CANADULCE",
+        "role": "Ponente"
+      },
+      {
+        "name": "ERIKA MARIA SANDOVAL VALERO",
+        "role": "Ponente"
+      }
+    ]
+  },
+  "0000186861": {
+    "profile_id": "0000186861",
+    "type_impactu": "Evento",
+    "order": 9,
+    "title": "Seminario Internacional de Ingeniería IES 2019",
+    "event_type": "Seminario Tipo de evento: Seminario",
+    "scope": "Nacional",
+    "profile_name": "Fixture author",
+    "raw_text": "9 Nombre del evento: Seminario Internacional de Ingeniería IES 2019 Tipo de evento: Seminario Tipo de evento: Seminario Ámbito: Nacional Realizado el:2019-09-18 00:00:00.0, 2019-09-20 00:00:00.0 en CHIQUINQUIRÁ - Instalaciones Auditorio Comfaboy Chiquinquirá Boyacá Instituciones asociadas Nombre de la institución: Fundación Universitaria de San Gil - UNISANGIL Tipo de vinculación Patrocinadora Participantes Nombre: ERIKA MARGARITA MONROY ACOSTA Rol en el evento: Asistente",
+    "start_date": "2019-09-18",
+    "end_date": "2019-09-20",
+    "year": 2019,
+    "location": "CHIQUINQUIRÁ - Instalaciones Auditorio Comfaboy Chiquinquirá Boyacá",
+    "city": "CHIQUINQUIRÁ",
+    "venue": "Instalaciones Auditorio Comfaboy Chiquinquirá Boyacá",
+    "associated_products": [],
+    "associated_institutions": [
+      {
+        "name": "Fundación Universitaria de San Gil - UNISANGIL",
+        "linkage": "Patrocinadora"
+      }
+    ],
+    "participants": [
+      {
+        "name": "ERIKA MARGARITA MONROY ACOSTA",
+        "role": "Asistente"
+      }
+    ]
+  },
+  "0000836630": {
+    "profile_id": "0000836630",
+    "type_impactu": "Evento",
+    "order": 128,
+    "title": "IV Congreso Latinoamericano De Agroecología",
+    "event_type": "Congreso Internacional de la Sociedad Científica Latinoamericana de Agroecología-SOCLA. Tipo de evento: Congreso",
+    "scope": "Nacional",
+    "profile_name": "Fixture author",
+    "raw_text": "128 Nombre del evento: IV Congreso Latinoamericano De Agroecología Tipo de evento: Congreso Internacional de la Sociedad Científica Latinoamericana de Agroecología-SOCLA. Tipo de evento: Congreso Ámbito: Nacional Realizado el:2013-09-10 00:00:00.0, 2013-09-12 00:00:00.0 en Lima - Universidad Nacional de Colombia sede Palmira Instituciones asociadas Nombre de la institución: UNIVERSIDAD NACIONAL DE COLOMBIA Tipo de vinculación Patrocinadora Participantes Nombre: DIEGO IVAN ANGEL SANCHEZ Rol en el evento: Asistente , Ponente",
+    "start_date": "2013-09-10",
+    "end_date": "2013-09-12",
+    "year": 2013,
+    "location": "Lima - Universidad Nacional de Colombia sede Palmira",
+    "city": "Lima",
+    "venue": "Universidad Nacional de Colombia sede Palmira",
+    "associated_products": [],
+    "associated_institutions": [
+      {
+        "name": "UNIVERSIDAD NACIONAL DE COLOMBIA",
+        "linkage": "Patrocinadora"
+      }
+    ],
+    "participants": [
+      {
+        "name": "DIEGO IVAN ANGEL SANCHEZ",
+        "role": "Asistente , Ponente"
+      }
+    ]
+  },
+  "0000689254": {
+    "profile_id": "0000689254",
+    "type_impactu": "Evento",
+    "order": 35,
+    "title": "IV Simposio de Salud Pública: Comunicación para la Salud Publica",
+    "event_type": "Simposio Ámbito Tipo de evento: Simposio",
+    "scope": "Nacional",
+    "profile_name": "Fixture author",
+    "raw_text": "35 Nombre del evento: IV Simposio de Salud Pública: Comunicación para la Salud Publica Tipo de evento: Simposio Ámbito Tipo de evento: Simposio Ámbito: Nacional Realizado el:2022-04-26 00:00:00.0, 2022-04-26 00:00:00.0 en MEDELLÍN - Universidad CES Instituciones asociadas Nombre de la institución: UNIVERSIDAD CES Tipo de vinculación Patrocinadora Participantes Nombre: LINA CAMACHO NUNEZ Rol en el evento: Organizador",
+    "start_date": "2022-04-26",
+    "end_date": "2022-04-26",
+    "year": 2022,
+    "location": "MEDELLÍN - Universidad CES",
+    "city": "MEDELLÍN",
+    "venue": "Universidad CES",
+    "associated_products": [],
+    "associated_institutions": [
+      {
+        "name": "UNIVERSIDAD CES",
+        "linkage": "Patrocinadora"
+      }
+    ],
+    "participants": [
+      {
+        "name": "LINA CAMACHO NUNEZ",
+        "role": "Organizador"
+      }
+    ]
+  }
+}

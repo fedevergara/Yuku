@@ -16,9 +16,11 @@ from yuku.cvlac_work_graph import (
     WORK_GRAPH_PUBLICATIONS,
     is_generic_title,
     normalize_title,
+    stable_work_id,
     type_family,
 )
 from yuku.scienti_routing import IMPACTU_CATALOG, route_minciencias
+from yuku.scraping_type_catalog import catalog_identity
 
 
 MEASUREMENT_SCHEMA_VERSION = "kahi-works-minciencias-measurement-v1"
@@ -173,6 +175,7 @@ def standalone_official_work(
 ) -> dict[str, Any]:
     """Keep an unmatched official work as its own conservative identity."""
     output = complete_kahi_work_shape(product)
+    output["_id"] = stable_work_id(str(product["_id"]))
     metadata = output.setdefault("bibliographic_info", {}).setdefault(
         "minciencias", {}
     )
@@ -512,6 +515,7 @@ def normalize_measured_product(
             "bibliographic_info": {
                 "minciencias": {
                     "schema_version": MEASUREMENT_SCHEMA_VERSION,
+                    "scraping_type_catalog": catalog_identity(),
                     "type_catalog_version": IMPACTU_CATALOG.version,
                     "type_catalog_sha256": IMPACTU_CATALOG.source_sha256,
                     "source": "gruplac_production_data",
@@ -815,6 +819,7 @@ def enrich_graph_work(
     link_by_product = {value["_id"]: value for value in links}
     minciencias_output = {
         "schema_version": MEASUREMENT_SCHEMA_VERSION,
+        "scraping_type_catalog": catalog_identity(),
         "source": "gruplac_production_data",
         "product_ids": sorted(product["_id"] for product in products),
         "measured_products": measured_products,
@@ -846,6 +851,9 @@ def enrich_graph_work(
     output["updated"].append({"source": "minciencias", "time": enriched_at})
     output["authors"] = original_authors
     output["author_count"] = len(original_authors)
+    if target_entity == "works":
+        from yuku.scienti_types import materialize_types
+        materialize_types(output)
     return output
 
 
@@ -910,6 +918,7 @@ class MincienciasMeasurementPipeline:
             raise ValueError("normalization source and destination must be different")
         config = {
             "schema_version": MEASUREMENT_SCHEMA_VERSION,
+            "scraping_type_catalog": catalog_identity(),
             "source_collection": source_collection,
             "destination_collection": destination_collection,
             "batch_size": batch_size,
@@ -1328,6 +1337,7 @@ class MincienciasMeasurementPipeline:
             raise ValueError("enriched target must differ from every source collection")
         config = {
             "schema_version": MEASUREMENT_SCHEMA_VERSION,
+            "scraping_type_catalog": catalog_identity(),
             "graph_collection": graph_collection,
             "measured_collection": measured_collection,
             "links_collection": links_collection,
@@ -1495,9 +1505,14 @@ class MincienciasMeasurementPipeline:
                     standalone_status_counts[
                         str(link.get("status") or "")
                     ] += 1
+                output_ids = (
+                    [stable_work_id(value) for value in product_ids]
+                    if target_entity == "works"
+                    else product_ids
+                )
                 collisions = output.count_documents(
                     {
-                        "_id": {"$in": product_ids},
+                        "_id": {"$in": output_ids},
                         (
                             "bibliographic_info.minciencias.identity_status"
                             if target_entity == "works"
@@ -1668,11 +1683,12 @@ class MincienciasMeasurementPipeline:
             upsert=True,
         )
         if publish_pointer:
+            from yuku.minciencias_publication import publish_current
             current_id = (
                 "current" if target_entity == "works" else f"current_{target_entity}"
             )
-            publication.replace_one(
-                {"_id": current_id},
+            publish_current(self.db, WORK_GRAPH_PUBLICATIONS if target_entity == "works"
+                            else SCIENTI_FINAL_ENTITY_PUBLICATIONS, current_id,
                 {
                     "_id": current_id,
                     "target_entity": target_entity,
@@ -1681,7 +1697,6 @@ class MincienciasMeasurementPipeline:
                     "previous_collection": previous_collection,
                     "published_at": published_at,
                 },
-                upsert=True,
             )
         summary = {
             "run_name": run_name,

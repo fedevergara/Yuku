@@ -112,7 +112,7 @@ class ScientiEntityVersionComparatorTests(unittest.TestCase):
                 {}, {"$set": {"source_metadata.normalizer_version": "scienti-entity-normalizer-v2"}}
             )
             self.db[self.new_destinations[entity]].update_one(
-                {}, {"$set": {"source_metadata.role_resolutions": []}}
+                {}, {"$set": {"source_metadata.role_resolutions": [], "source_metadata.normalizer_version": "scienti-entity-normalizer-v3"}}
             )
         self.db[self.old_destinations["works"]].update_one(
             {}, {"$set": {"authors": [], "author_count": 0}}
@@ -142,7 +142,7 @@ class ScientiEntityVersionComparatorTests(unittest.TestCase):
         new_work["updated"][0]["time"] = 2
         new_work["authors"] = [old_work["authors"][0]]
         new_work["author_count"] = 1
-        new_work["source_metadata"]["normalizer_version"] = ENTITY_NORMALIZER_VERSION
+        new_work["source_metadata"]["normalizer_version"] = "scienti-entity-normalizer-v3"
         new_work["source_metadata"]["role_resolutions"] = [{
             "rule": "student_precedence_exact_name",
             "name": "ANA ESTUDIANTE",
@@ -161,7 +161,7 @@ class ScientiEntityVersionComparatorTests(unittest.TestCase):
         self.db[self.old_destinations["events"]].replace_one({"_id": old_event["_id"]}, old_event)
         new_event = deepcopy(old_event)
         new_event["updated"][0]["time"] = 2
-        new_event["source_metadata"]["normalizer_version"] = ENTITY_NORMALIZER_VERSION
+        new_event["source_metadata"]["normalizer_version"] = "scienti-entity-normalizer-v3"
         new_event["source_metadata"]["role_resolutions"] = []
         occurrence = new_event["source_metadata"]["occurrences"][0]
         occurrence["metadata"]["end_date"] = None
@@ -189,7 +189,7 @@ class ScientiEntityVersionComparatorTests(unittest.TestCase):
         new_event = deepcopy(old_event)
         new_event["_id"] = "reidentified-event"
         new_event["updated"][0]["time"] = 2
-        new_event["source_metadata"]["normalizer_version"] = ENTITY_NORMALIZER_VERSION
+        new_event["source_metadata"]["normalizer_version"] = "scienti-entity-normalizer-v3"
         new_event["source_metadata"]["role_resolutions"] = []
         new_event["source_metadata"]["identity_key"] = "source|events|cvlac|0000000001|0|registro"
         new_event["source_metadata"]["identity_rule"] = "source_scoped_insufficient_anchors"
@@ -232,7 +232,7 @@ class ScientiEntityVersionComparatorTests(unittest.TestCase):
             )
             self.db[self.new_destinations[entity]].update_one(
                 {}, {"$set": {
-                    "source_metadata.normalizer_version": ENTITY_NORMALIZER_VERSION,
+                    "source_metadata.normalizer_version": "scienti-entity-normalizer-v4",
                     "source_metadata.router_version": "scienti-exact-router-v5",
                     "source_metadata.type_catalog_version": IMPACTU_CATALOG.version,
                     "source_metadata.type_catalog_sha256": IMPACTU_CATALOG.source_sha256,
@@ -243,7 +243,7 @@ class ScientiEntityVersionComparatorTests(unittest.TestCase):
                 "cvlac_exact_thesis_type",
                 "Trabajos dirigidos/Tutorías - Trabajos de grado de pregrado",
                 "Trabajos dirigidos/tutorias",
-                "Tesis de Pregrado",
+                "Tesis de pregrado",
             ),
             "projects": (
                 "cvlac_exact_project_type",
@@ -364,11 +364,11 @@ class ScientiEntityVersionComparatorTests(unittest.TestCase):
                     {
                         "provenance": "scienti",
                         "source": "impactu",
-                        "type": "Articulo de revista",
+                        "type": "Artículo de revista",
                     },
                 ],
                 "source_metadata": {
-                    "normalizer_version": ENTITY_NORMALIZER_VERSION,
+                    "normalizer_version": "scienti-entity-normalizer-v4",
                     "router_version": "scienti-exact-router-v5",
                     "type_catalog_version": IMPACTU_CATALOG.version,
                     "type_catalog_sha256": IMPACTU_CATALOG.source_sha256,
@@ -458,7 +458,7 @@ class ScientiEntityVersionComparatorTests(unittest.TestCase):
         self.db[ENTITY_RUNS].update_one(
             {"_id": "entities_old"},
             {"$set": {
-                "config.normalizer_version": ENTITY_NORMALIZER_VERSION,
+                "config.normalizer_version": "scienti-entity-normalizer-v4",
                 "config.router_version": "scienti-exact-router-v5",
             }},
         )
@@ -466,7 +466,7 @@ class ScientiEntityVersionComparatorTests(unittest.TestCase):
             self.db[self.old_destinations[entity]].update_one(
                 {},
                 {"$set": {
-                    "source_metadata.normalizer_version": ENTITY_NORMALIZER_VERSION,
+                    "source_metadata.normalizer_version": "scienti-entity-normalizer-v4",
                     "source_metadata.router_version": "scienti-exact-router-v5",
                     "source_metadata.type_catalog_version": IMPACTU_CATALOG.version,
                     "source_metadata.type_catalog_sha256": IMPACTU_CATALOG.source_sha256,
@@ -480,7 +480,7 @@ class ScientiEntityVersionComparatorTests(unittest.TestCase):
             "_id": "removed-event",
             "updated": [{"source": "scienti", "time": 1}],
             "source_metadata": {
-                "normalizer_version": ENTITY_NORMALIZER_VERSION,
+                "normalizer_version": "scienti-entity-normalizer-v4",
                 "router_version": "scienti-exact-router-v5",
             },
         })

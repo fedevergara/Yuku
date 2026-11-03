@@ -71,8 +71,8 @@ class ScientiRoutingTest(unittest.TestCase):
                 "_id": "1",
                 "production": [
                     {"title": "Artículo válido", "type_impactu": "Artículo de revista"},
-                    {"title": "Proyecto excluido", "type_impactu": "Proyecto"},
-                    {"title": "Patente excluida", "type_impactu": "Patente"},
+                    {"title": "Proyecto excluido", "product_type": "Investigación y desarrollo", "source_section": "Proyectos", "type_impactu": "Proyecto"},
+                    {"title": "Patente excluida", "product_type": "Patente", "type_impactu": "Patente"},
                 ],
             }
         )

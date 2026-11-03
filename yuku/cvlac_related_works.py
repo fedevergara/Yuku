@@ -6,6 +6,8 @@ import unicodedata
 from typing import Any
 
 from bs4 import BeautifulSoup
+from yuku.scienti_types import classify_native, native_type
+from yuku.scienti_events import normalize_event_type
 
 
 SCIENTI_CVLAC_URL = "https://scienti.minciencias.gov.co/cvlac/visualizador/generarCurriculoCv.do?cod_rh="
@@ -34,6 +36,10 @@ SUSPICIOUS_PUBLISHER_RE = re.compile(
     r"[0-9Xx](?:[0-9Xx]-?){8,16}[0-9Xx]$)",
     re.IGNORECASE,
 )
+SUSPICIOUS_PUBLICATION_PLACE_RE = re.compile(
+    r"^(?:(?:19|20)\d{2}|(?:ISBN|ISSN|Autores?|Edici[oó]n|Serie)\b)",
+    re.IGNORECASE,
+)
 
 LABEL_ALIASES = {
     "nombre del producto": "product_name",
@@ -49,6 +55,8 @@ LABEL_ALIASES = {
     "tutor(es)/cotutor(es)": "tutors",
     "isbn": "isbn_label",
     "editorial": "publisher",
+    "nombre de la revista": "journal_name",
+    "revista": "journal_name",
     "edicion": "edition",
     "numero de edicion": "edition",
     "numero de paginas": "pages",
@@ -334,7 +342,7 @@ def extract_product_type(section_title: str, blockquote) -> str:
             b = previous_tr.find("b")
             if b:
                 candidate = clean_text(b.get_text(" ", strip=True))
-                if candidate and not candidate.endswith(":"):
+                if candidate and native_type(candidate, section_title)["native"]:
                     return candidate
 
     if norm_text(section_title) == "patentes":
@@ -342,31 +350,11 @@ def extract_product_type(section_title: str, blockquote) -> str:
 
     detail_text = clean_text(blockquote.get_text(" ", strip=True))
     inline_type = extract_inline_type(detail_text)
-    return inline_type or section_title
+    return inline_type if native_type(inline_type, section_title)["native"] else section_title
 
 
 def classify_target_category(section_title: str, product_type: str) -> str:
-    section_n = norm_text(section_title)
-    product_n = norm_text(product_type)
-    blob_n = f"{section_n} | {product_n}"
-
-    if section_n == "trabajos dirigidos/tutorias":
-        if any(token in blob_n for token in ["tesis de doctorado", "trabajo de grado de maestria", "especialidad clinica"]):
-            return "Tesis de posgrado"
-        if any(token in blob_n for token in ["trabajos de grado de pregrado", "tesis de pregrado"]):
-            return "Tesis de pregrado"
-        return "Trabajos dirigidos/tutorias"
-    if section_n == "articulos":
-        return "Articulo de revista"
-    if section_n == "capitulos de libro":
-        return "Capitulo de libro"
-    if section_n in {"libros", "libros de divulgacion y/o compilacion de divulgacion", "libro de formacion"}:
-        return "Libro"
-    if section_n in {"publicaciones editoriales no especializadas", "textos en publicaciones no cientificas"}:
-        return "Publicaciones editoriales no especializadas"
-    if section_n == "patentes":
-        return "Patente"
-    return section_title
+    return classify_native(product_type, section_title)
 
 
 def normalize_advisor_role(value: str) -> str:
@@ -709,7 +697,7 @@ def parse_blockquote(profile_id: str, section_title: str, blockquote, profile_au
     type_impactu = classify_target_category(section_title, product_type)
     book_related = type_impactu in {
         "Libro",
-        "Capitulo de libro",
+        "Capítulo de libro",
         "Publicaciones editoriales no especializadas",
     }
     directed_title = ""
@@ -765,6 +753,14 @@ def parse_blockquote(profile_id: str, section_title: str, blockquote, profile_au
         "status": source_fields.get("status", ""),
         "raw_text": text,
     }
+    previous_row = blockquote.find_parent("tr")
+    previous_row = previous_row.find_previous_sibling("tr") if previous_row else None
+    if previous_row and not previous_row.find("blockquote"):
+        bold = previous_row.find("b")
+        candidate = clean_text(bold.get_text(" ", strip=True)) if bold else ""
+        if candidate and not native_type(candidate, section_title)["native"]:
+            record["type_findings"] = [{"reason": "previous_bold_text_is_not_a_catalog_type",
+                                        "raw_type": candidate, "source_section": section_title}]
     if is_patent:
         applicant = source_fields.get("patent_applicant") or extract_patent_applicant(
             text, fields
@@ -794,6 +790,10 @@ def parse_blockquote(profile_id: str, section_title: str, blockquote, profile_au
             section_title,
             profile_author_name,
         )
+    if norm_text(type_impactu) == "articulo de revista":
+        from yuku.scienti_journals import journal_context
+        record.update(journal_context(text, title, source_fields=source_fields,
+                                      country=record["country"]))
     return record
 
 
@@ -1145,7 +1145,7 @@ def parse_event_row(
         "type_impactu": "Evento",
         "order": int(main.group("order")),
         "title": strip_value(main.group("title")),
-        "event_type": strip_value(main.group("event_type")),
+        "event_type": normalize_event_type(strip_value(main.group("event_type"))),
         "scope": strip_value(main.group("scope")),
         "profile_name": profile_author_name,
         "raw_text": text,

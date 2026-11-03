@@ -122,7 +122,7 @@ class ScientiAuxiliarySemanticAuditTests(unittest.TestCase):
         self.assertNotIn("missing_student", result["finding_counts"])
         self.assertNotIn("missing_advisor", result["finding_counts"])
 
-    def test_graduate_degree_work_accepts_docencia_impactu_type(self):
+    def test_graduate_degree_work_accepts_catalog_postgraduate_type(self):
         occurrence = self._occ(
             "occ-monograph",
             "Monografía de conclusión de curso de perfeccionamiento/especialización",
@@ -135,7 +135,7 @@ class ScientiAuxiliarySemanticAuditTests(unittest.TestCase):
             "graduate_degree_work",
             occurrence,
         )
-        document["types"].append({"source": "impactu", "type": "Docencia"})
+        document["types"].append({"source": "impactu", "type": "Tesis de posgrado"})
         document["authors"] = [
             {"id": "0000000002", "full_name": "Estudiante Verificable", "affiliations": []},
             {"id": "0000000001", "full_name": "Asesora Verificable", "affiliations": [], "type": "advisor"},

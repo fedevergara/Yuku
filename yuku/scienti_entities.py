@@ -22,6 +22,8 @@ from pymongo import ASCENDING, ReplaceOne
 
 from yuku.gruplac_related_works import enrich_exact_section
 from yuku.minciencias_measurements import empty_kahi_work
+from yuku.scraping_type_catalog import catalog_identity, classification_context
+from yuku.scienti_events import normalize_event_type
 from yuku.scienti_routing import (
     ENTITY_ROUTER_VERSION,
     GRUPLAC_DIRECTED_SECTIONS,
@@ -34,7 +36,7 @@ from yuku.scienti_routing import (
 
 
 ENTITY_SCHEMA_VERSION = "kahi-scienti-entities-v1"
-ENTITY_NORMALIZER_VERSION = "scienti-entity-normalizer-v4"
+ENTITY_NORMALIZER_VERSION = "scienti-entity-normalizer-v5"
 ENTITY_RUNS = "scienti_entity_normalization_runs"
 ENTITY_AUDITS = "scienti_entity_normalization_audits"
 BOGOTA = ZoneInfo("America/Bogota")
@@ -178,6 +180,12 @@ def _sanitize_event_record(record: dict[str, Any]) -> tuple[dict[str, Any], list
     """Null unsafe event values while retaining reason codes for audit."""
     output = deepcopy(record)
     findings: list[dict[str, str]] = []
+    for field in ("event_type", "product_type"):
+        if field in output:
+            normalized = normalize_event_type(output[field])
+            if normalized != output[field]:
+                findings.append({"kind": "source_event_type_normalized", "field": field})
+                output[field] = normalized
     raw_start = str(output.get("start_date") or "").strip()
     raw_end = str(output.get("end_date") or "").strip()
     start = _valid_event_date(raw_start)
@@ -565,25 +573,25 @@ def normalize_occurrence(
     else:
         document = empty_kahi_patent()
 
-    native_type = str(record.get("product_type") or record.get("project_type") or record.get("event_type") or "")
+    native_type, native_parent = classification_context(record, entity=entity)
     document.update(
         {
             "_id": entity_id,
-            "titles": [{"title": title, "lang": "es", "source": "scienti"}],
-            "updated": [{"source": "scienti", "time": normalized_at}],
+            "titles": [{"title": title, "lang": "es", "source": "minciencias"}],
+            "updated": [{"source": "minciencias", "time": normalized_at}],
             "types": [
                 {
-                    "provenance": "scienti",
-                    "source": "scienti",
+                    "provenance": "minciencias",
+                    "source": "minciencias",
                     "type": native_type,
                     "level": 1,
-                    "parent": str(record.get("source_section") or "") or None,
+                    "parent": native_parent or None,
                 }
             ],
             "external_ids": [
                 {
-                    "provenance": "scienti",
-                    "source": "scienti",
+                    "provenance": "minciencias",
+                    "source": "minciencias",
                     "id": {
                         "source_kind": source_kind,
                         "source_id": source_id,
@@ -592,7 +600,7 @@ def normalize_occurrence(
                 }
             ],
             "external_urls": [
-                {"source": "scienti", "url": source_url}
+                {"source": "minciencias", "url": source_url}
             ] if source_url else [],
             "authors": authors,
             "author_count": len(authors),
@@ -601,6 +609,7 @@ def normalize_occurrence(
                 "schema_version": ENTITY_SCHEMA_VERSION,
                 "router_version": ENTITY_ROUTER_VERSION,
                 "normalizer_version": ENTITY_NORMALIZER_VERSION,
+                "scraping_type_catalog": catalog_identity(),
                 "type_catalog_version": route.get("catalog_version", ""),
                 "type_catalog_sha256": route.get("catalog_sha256", ""),
                 "target_entity": entity,
@@ -616,11 +625,13 @@ def normalize_occurrence(
     if route.get("impactu_type"):
         document["types"].append(
             {
-                "provenance": "scienti",
+                "provenance": "minciencias",
                 "source": "impactu",
                 "type": route["impactu_type"],
             }
         )
+    from yuku.scienti_types import materialize_types
+    materialize_types(document, entity=entity)
     return document
 
 
@@ -836,6 +847,7 @@ class ScientiEntityNormalizationRun:
             "schema_version": ENTITY_SCHEMA_VERSION,
             "router_version": ENTITY_ROUTER_VERSION,
             "normalizer_version": ENTITY_NORMALIZER_VERSION,
+            "scraping_type_catalog": catalog_identity(),
             "cvlac_collection": cvlac_collection,
             "gruplac_collection": gruplac_collection,
             "destinations": deepcopy(destinations),

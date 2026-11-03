@@ -65,7 +65,8 @@ def main():
 
         # Include additional files into the package
         include_package_data=True,
-        exclude_package_data={"": ["*.json", "*.pyc", "__pycache__/*"]},
+        package_data={"yuku": ["data/minciencias_scraping_types_v1.json"]},
+        exclude_package_data={"": ["*.pyc", "__pycache__/*"]},
 
         # Details
         url="https://github.com/colav/Yuku",
@@ -91,6 +92,9 @@ def main():
             'openpyxl',
             'Kahi_impactu_type_catalog==0.1.0',
         ],
+        extras_require={
+            'identified_works': ['Kahi==0.1.2a0', 'Kahi_impactu_utils==0.1.5', 'thefuzz==0.22.1'],
+        },
     )
 
 

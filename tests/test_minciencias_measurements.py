@@ -3,6 +3,7 @@ import unittest
 import mongomock
 
 from yuku.cvlac_work_graph import WORK_GRAPH_PUBLICATIONS
+from yuku.cvlac_work_graph import stable_work_id
 from yuku.minciencias_measurements import (
     MincienciasMeasurementPipeline,
     SCIENTI_FINAL_ENTITY_PUBLICATIONS,
@@ -175,7 +176,7 @@ class MeasuredProductLinkTest(unittest.TestCase):
             self.product, link, materialized_at=20
         )
 
-        self.assertEqual(standalone["_id"], self.product["_id"])
+        self.assertEqual(standalone["_id"], stable_work_id(self.product["_id"]))
         self.assertEqual(standalone["authors"], [])
         self.assertEqual(standalone["author_count"], 0)
         self.assertEqual(
@@ -294,7 +295,9 @@ class MeasurementPipelineIntegrationTest(unittest.TestCase):
         self.assertEqual(materialized["unlinked_official_products"], 1)
         self.assertEqual(self.db.graph_v3.count_documents({}), 3)
         self.assertIsNotNone(self.db.graph_v3.find_one({"_id": "scraped-only"}))
-        standalone = self.db.graph_v3.find_one({"_id": "ART-0000999999-1"})
+        standalone = self.db.graph_v3.find_one(
+            {"_id": stable_work_id("ART-0000999999-1")}
+        )
         self.assertIsNotNone(standalone)
         self.assertEqual(
             standalone["bibliographic_info"]["minciencias"]["identity_status"],

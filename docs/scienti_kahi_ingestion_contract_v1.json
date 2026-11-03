@@ -203,7 +203,7 @@
       "target_collection_pattern": "scienti_persons_final_<run>",
       "frozen_manifest_valid_ids": 437606,
       "identity": "COD_RH",
-      "materializer_version": "scienti-persons-v2",
+      "materializer_version": "scienti-persons-v3",
       "identity_universe": {
         "include_frozen_cvlac_manifest": true,
         "include_valid_audited_gruplac_members": true,

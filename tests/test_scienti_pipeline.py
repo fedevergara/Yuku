@@ -195,6 +195,7 @@ class ScientiPipelineTests(unittest.TestCase):
         value = {
             "run_name": "scienti_test",
             "snapshot_tag": "test",
+            "publication": {"date": "20261009"},
             "convocations": {
                 "mode": "json",
                 "researchers_json": str(Path(directory) / "investigadores.json"),
@@ -235,6 +236,10 @@ class ScientiPipelineTests(unittest.TestCase):
         self.assertLess(STAGES.index("events_final"), STAGES.index("final_release"))
         self.assertLess(STAGES.index("final_release"), STAGES.index("cleanup"))
         self.assertEqual(STAGES[-1], "cleanup")
+        self.assertLess(STAGES.index("final_release"), STAGES.index("affiliations_final"))
+        self.assertLess(STAGES.index("affiliations_final"), STAGES.index("persons_final"))
+        self.assertLess(STAGES.index("persons_final"), STAGES.index("kahi_release"))
+        self.assertLess(STAGES.index("kahi_release"), STAGES.index("identified_works"))
 
     def test_json_is_default_and_derived_collections_are_versioned(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -247,6 +252,7 @@ class ScientiPipelineTests(unittest.TestCase):
             value = {
                 "run_name": "scienti_default_json",
                 "snapshot_tag": "snapshot_1",
+                "publication": {"date": "20261009"},
                 "convocations": {
                     "researchers_json": str(Path(directory) / "investigadores.json"),
                     "groups_json": str(Path(directory) / "grupos.json"),
@@ -274,19 +280,19 @@ class ScientiPipelineTests(unittest.TestCase):
             )
             self.assertEqual(
                 config["collections"]["final_graph"],
-                "scienti_works_final_snapshot_1",
+                "minciencias_works_v01_20261009",
             )
             self.assertEqual(
                 config["collections"]["projects_final"],
-                "scienti_projects_final_snapshot_1",
+                "minciencias_projects_v01_20261009",
             )
             self.assertEqual(
                 config["collections"]["patents_final"],
-                "scienti_patents_final_snapshot_1",
+                "minciencias_patents_v01_20261009",
             )
             self.assertEqual(
                 config["collections"]["events_final"],
-                "scienti_events_final_snapshot_1",
+                "minciencias_events_v01_20261009",
             )
 
     def test_project_and_patent_graph_stages_use_published_normalizations(self):
@@ -368,90 +374,54 @@ class ScientiPipelineTests(unittest.TestCase):
                 )
             )
 
+    def _seed_final_release(self, pipeline):
+        db = pipeline.db
+        tag = pipeline.config["snapshot_tag"]
+        collection_keys = {"works": "final_graph", "projects": "projects_final",
+            "patents": "patents_final", "events": "events_final",
+            "persons": "persons_final", "affiliations": "affiliations_final"}
+        collections = {role: pipeline.names[key] for role, key in collection_keys.items()}
+        runs = {role: f"{pipeline.run_name}_{role}_final" for role in collections}
+        for role, collection in collections.items():
+            db[collection].insert_one({"_id": "row"})
+            if role in {"persons", "affiliations"}:
+                stem = "person" if role == "persons" else "affiliation"
+                db[f"scienti_{stem}_publications"].insert_one({"_id": runs[role],
+                    "status": "published", "collection": collection, "audit": role + "_audit", "published_at": 1})
+        release = {"_id": f"release_{tag}_kahi", "status": "published", "entity_count": 6,
+            "published_at": 1, "audit": f"release_{tag}_kahi_audit",
+            "collections": collections, "materialization_runs": runs}
+        db.scienti_final_release_publications.insert_one(release)
+        db.scienti_final_release_audits.insert_one({"_id": release["audit"], "status": "passed",
+            "critical_anomalies": 0, "collections": collections, "materialization_runs": runs,
+            "evidence": {role: {"collection": collection, "documents": 1} for role, collection in collections.items()}})
+        filtered = pipeline.names["identified_works"]
+        db[filtered].insert_one({"_id": "row"})
+        config = {"target": filtered, "source": {"collections": collections, "counts": {"works": 1, "persons": 1}}}
+        db.scienti_identified_work_publications.insert_one({"_id": filtered, "release_name": release["_id"],
+            "run_name": "filtered_run", "audit": "filtered_audit", "documents": 1})
+        db.scienti_identified_work_audits.insert_one({"_id": "filtered_audit", "status": "passed",
+            "config": config, "documents": 1, "documents_digest": "proof"})
+        db.scienti_identified_work_runs.insert_one({"_id": "filtered_run", "status": "complete",
+            "config": config, "documents_digest": "proof"})
+        return release
+
     def test_final_release_is_joint_and_cleanup_protects_sources(self):
         with tempfile.TemporaryDirectory() as directory:
-            Path(directory, "investigadores.json").write_text(
-                '[{"investigador_id":"INV-1"}]', encoding="utf-8"
-            )
-            Path(directory, "grupos.json").write_text(
-                '[{"grupo_id":"GRP-1"}]', encoding="utf-8"
-            )
-            yuku = FakeYuku()
-            pipeline = ScientiFullPipeline(yuku, self._config(directory))
+            pipeline = ScientiFullPipeline(FakeYuku(), self._config(directory))
             pipeline._bibliographic_audit()
             pipeline._final_release()
-            self.assertEqual(
-                set(yuku.final_release_call["collections"]),
-                {"works", "projects", "patents", "events"},
-            )
-            previous_collections = {
-                entity: f"previous_{entity}"
-                for entity in ("works", "projects", "patents", "events")
-            }
-            yuku.db.scienti_final_release_publications.insert_many(
-                [
-                    {
-                        "_id": "current",
-                        "current_release": "release_test",
-                        "previous_release": "release_previous",
-                    },
-                    {
-                        "_id": "release_previous",
-                        "collections": previous_collections,
-                    },
-                ]
-            )
-            current_entity_collections = {
-                entity: pipeline.names[f"entity_{entity}"]
-                for entity in ("works", "projects", "patents", "events")
-            }
-            previous_entity_collections = {
-                entity: f"previous_entity_{entity}"
-                for entity in ("works", "projects", "patents", "events")
-            }
-            yuku.db.scienti_entity_publications.insert_many(
-                [
-                    {
-                        "_id": "current",
-                        "current_run_name": "scienti_test_entities",
-                        "previous_run_name": "previous_entities",
-                        "destinations": current_entity_collections,
-                    },
-                    {
-                        "_id": "previous_entities",
-                        "record_type": "release",
-                        "destinations": previous_entity_collections,
-                    },
-                ]
-            )
-            pipeline._cleanup()
-            self.assertIn(
-                pipeline.names["cvlac_raw"], yuku.release_cleanup_call["protected"]
-            )
-            self.assertIn(
-                pipeline.names["base_graph"], yuku.release_cleanup_call["candidates"]
-            )
-            self.assertNotIn(
-                pipeline.names["final_graph"], yuku.release_cleanup_call["candidates"]
-            )
-            self.assertTrue(
-                set(previous_collections.values()).issubset(
-                    yuku.release_cleanup_call["candidates"]
-                )
-            )
-            self.assertTrue(
-                set(current_entity_collections.values()).issubset(
-                    yuku.release_cleanup_call["protected"]
-                )
-            )
-            self.assertTrue(
-                set(previous_entity_collections.values()).issubset(
-                    yuku.release_cleanup_call["candidates"]
-                )
-            )
-            self.assertFalse(
-                yuku.release_cleanup_call["reset_entity_publication"]
-            )
+            self.assertFalse(pipeline.yuku.final_release_call["publish_pointer"])
+            release = self._seed_final_release(pipeline)
+            for key in ("cvlac_raw", "gruplac_raw", "cvlac_normalized", "gruplac_normalized"):
+                pipeline.db[pipeline.names[key]].insert_one({"_id": "source"})
+            result = pipeline._cleanup()
+            self.assertEqual(result["current"]["collections"], release["collections"])
+            self.assertEqual(len(result["current"]["collections"]), 6)
+            for key in ("cvlac_raw", "gruplac_raw", "cvlac_normalized", "gruplac_normalized"):
+                self.assertEqual(pipeline.db[pipeline.names[key]].count_documents({}), 1)
+            self.assertEqual(pipeline.db.scienti_identified_work_publications.find_one({"_id": "current"})["collection"],
+                             pipeline.names["identified_works"])
 
     def test_final_release_requires_the_bibliographic_gate(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -478,6 +448,57 @@ class ScientiPipelineTests(unittest.TestCase):
                 yuku.db.scienti_work_graph_publications.find_one({"_id": "current"}),
                 previous,
             )
+
+    def test_identity_builds_use_canonical_targets_and_defer_current(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline = ScientiFullPipeline(FakeYuku(), self._config(directory))
+            with patch.object(pipeline.yuku, "materialize_scienti_affiliations", create=True) as affiliations:
+                pipeline._affiliations_final()
+                self.assertFalse(affiliations.call_args.kwargs["publish_pointer"])
+                self.assertEqual(affiliations.call_args.kwargs["target_collection"], "minciencias_affiliations_v01_20261009")
+            with patch.object(pipeline.yuku, "materialize_scienti_persons", create=True) as persons:
+                pipeline._persons_final()
+                self.assertFalse(persons.call_args.kwargs["publish_pointer"])
+                self.assertEqual(persons.call_args.kwargs["target_collection"], "minciencias_person_v01_20261009")
+                self.assertEqual(persons.call_args.kwargs["manifest_collection"], "scienti_test_cvlac_targets")
+
+    def test_filter_generation_is_a_separate_parameter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline = ScientiFullPipeline(FakeYuku(), self._config(directory))
+            with patch.object(pipeline.yuku, "create_scienti_identified_works", create=True) as selector:
+                pipeline._identified_works()
+                self.assertEqual(selector.call_count, 2)
+                self.assertTrue(selector.call_args_list[0].kwargs["count_only"])
+                self.assertEqual(selector.call_args_list[1].kwargs["target_collection"], "minciencias_works_v01_20261009_filtered")
+                pipeline.config["processing"]["generate_identified_works"] = False
+                self.assertEqual(pipeline._identified_works()["status"], "skipped")
+                self.assertEqual(selector.call_count, 2)
+
+    def test_missing_filter_proof_leaves_previous_current_and_data_intact(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline = ScientiFullPipeline(FakeYuku(), self._config(directory))
+            self._seed_final_release(pipeline)
+            previous = {"_id": "current", "current_release": "previous", "collections": {"works": "old_works"}}
+            pipeline.db.scienti_final_release_publications.insert_one(previous)
+            pipeline.db.old_works.insert_one({"_id": "work"})
+            pipeline.db.scienti_identified_work_audits.update_one({"_id": "filtered_audit"}, {"$set": {"status": "failed"}})
+            with self.assertRaises(RuntimeError):
+                pipeline._cleanup()
+            self.assertEqual(pipeline.db.scienti_final_release_publications.find_one({"_id": "current"}), previous)
+            self.assertEqual(pipeline.db.old_works.count_documents({}), 1)
+
+    def test_independent_filter_updates_current_only_for_current_full_release(self):
+        from yuku.minciencias_publication import publish_filtered_current
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline = ScientiFullPipeline(FakeYuku(), self._config(directory))
+            release = self._seed_final_release(pipeline)
+            self.assertFalse(publish_filtered_current(pipeline.db, release["_id"], pipeline.names["identified_works"]))
+            pipeline.db.scienti_final_release_publications.insert_one({"_id": "current",
+                "current_release": release["_id"], "collections": release["collections"], "audit": release["audit"]})
+            self.assertTrue(publish_filtered_current(pipeline.db, release["_id"], pipeline.names["identified_works"]))
+            current = pipeline.db.scienti_identified_work_publications.find_one({"_id": "current"})
+            self.assertEqual(current["full_graph"], pipeline.names["final_graph"])
+            self.assertEqual(current["collection"], pipeline.names["identified_works"])
 
     def test_joint_release_updates_legacy_pointers_only_after_all_gates(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -519,6 +540,12 @@ class ScientiPipelineTests(unittest.TestCase):
 
             pipeline._bibliographic_audit()
             pipeline._final_release()
+            for entity, previous in expected_previous.items():
+                namespace = "scienti_work_graph_publications" if entity == "works" else "scienti_final_entity_publications"
+                pointer_id = "current" if entity == "works" else "current_" + entity
+                self.assertEqual(yuku.db[namespace].find_one({"_id": pointer_id}), previous)
+            self._seed_final_release(pipeline)
+            pipeline._cleanup()
 
             final_names = {
                 "works": "final_graph",
@@ -535,10 +562,7 @@ class ScientiPipelineTests(unittest.TestCase):
                 current_id = "current" if entity == "works" else f"current_{entity}"
                 pointer = yuku.db[collection].find_one({"_id": current_id})
                 self.assertEqual(pointer["current_collection"], pipeline.names[name_key])
-                self.assertEqual(
-                    pointer["previous_collection"],
-                    f"preceding_safe_{entity}",
-                )
+                self.assertEqual(pointer["current_run_name"], f"{pipeline.run_name}_{entity}_final")
 
     def test_base_graph_build_restores_the_preceding_public_pointer(self):
         with tempfile.TemporaryDirectory() as directory:

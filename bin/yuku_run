@@ -36,6 +36,20 @@ parser.add_argument('--scienti_pipeline_to_stage', default='',
                     help='Stop a configured full pipeline after this stage')
 parser.add_argument('--scienti_pipeline_dry_run', action='store_true',
                     help='Validate and display a full pipeline plan without processing data')
+parser.add_argument('--create_scienti_identified_works', action='store_true',
+                    help='Select works with valid DOI, ISBN or coherent ScienTI pair from a pinned release')
+parser.add_argument('--scienti_identified_works_release',
+                    help='Explicit published release name; the current pointer is never used')
+parser.add_argument('--scienti_identified_works_run_name',
+                    help='Unique run name; reuse the same arguments to resume')
+parser.add_argument('--scienti_identified_works_collection', default='',
+                    help='New independent target collection; existing destinations are never overwritten')
+parser.add_argument('--scienti_identified_works_count_only', action='store_true',
+                    help='Count eligible works without creating a destination')
+parser.add_argument('--scienti_identified_works_expected_count_run', default='',
+                    help='Completed count-only run that this materialization must match')
+parser.add_argument('--scienti_identified_works_batch_size', type=int, default=500)
+parser.add_argument('--scienti_identified_works_progress_every', type=int, default=10000)
 parser.add_argument('--download_cvlac', type=str,
                     help='Download cvlac data for given dataset id')
 parser.add_argument('--download_cvlac_profiles', action='store_true',
@@ -179,7 +193,11 @@ parser.add_argument('--minciencias_measurement_links_collection',
 parser.add_argument('--minciencias_measurement_graph_collection', default='',
                     help='Scraped graph source; empty uses the current published graph')
 parser.add_argument('--minciencias_enriched_graph_collection',
-                    default='cvlac_works_graph_full_measurements_v1')
+                    default='')
+parser.add_argument('--scienti_publication_date', default=None,
+                    help='Final collection date in aaaammdd; default: Bogota date')
+parser.add_argument('--scienti_entity_version', default='auto',
+                    help='Independent version of the entity being materialized: vXX or auto')
 parser.add_argument('--minciencias_measurement_batch_size', type=int, default=500)
 parser.add_argument('--minciencias_measurement_progress_every', type=int, default=10000)
 parser.add_argument('--minciencias_measurement_max_candidates', type=int, default=100)
@@ -241,7 +259,7 @@ parser.add_argument('--scienti_affiliations_gruplac_collection',
 parser.add_argument('--scienti_affiliations_gruplac_audit_name',
                     default='gruplac_normalization_audit')
 parser.add_argument('--scienti_affiliations_target_collection',
-                    default='scienti_affiliations_final_v1')
+                    default='')
 parser.add_argument('--scienti_affiliations_batch_size', type=int, default=500)
 parser.add_argument('--scienti_affiliations_progress_every', type=int, default=1000)
 parser.add_argument('--scienti_affiliations_expected_groups', type=int, default=0)
@@ -273,7 +291,7 @@ parser.add_argument('--scienti_persons_affiliation_collection',
 parser.add_argument('--scienti_persons_final_release_name')
 parser.add_argument('--scienti_persons_final_release_audit_name')
 parser.add_argument('--scienti_persons_target_collection',
-                    default='scienti_persons_final_v1')
+                    default='')
 parser.add_argument('--scienti_persons_batch_size', type=int, default=500)
 parser.add_argument('--scienti_persons_progress_every', type=int, default=10000)
 parser.add_argument('--scienti_persons_expected_people', type=int, default=0)
@@ -358,8 +376,30 @@ parser.add_argument('--scienti_auxiliary_audit_example_limit', type=int, default
 
 if __name__ == '__main__':
     args = parser.parse_args()
+    if args.create_scienti_identified_works:
+        if not args.scienti_identified_works_release or not args.scienti_identified_works_run_name:
+            parser.error('identified works require an explicit release and run name')
+        if args.scienti_identified_works_count_only:
+            if args.scienti_identified_works_collection or args.scienti_identified_works_expected_count_run:
+                parser.error('count-only must not name a destination or expected count run')
+        if args.drop_mongodb or args.run_scienti_pipeline:
+            parser.error('identified works must run separately from database deletion or the full pipeline')
     yuku = Yuku(args.mongo_dbname, args.mongo_dburi,
                 args.socrata_endpoint, args.delay)
+
+    if args.create_scienti_identified_works:
+        import logging
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+        print(json.dumps(yuku.create_scienti_identified_works(
+            release_name=args.scienti_identified_works_release,
+            run_name=args.scienti_identified_works_run_name,
+            target_collection=args.scienti_identified_works_collection,
+            count_only=args.scienti_identified_works_count_only,
+            batch_size=args.scienti_identified_works_batch_size,
+            progress_every=args.scienti_identified_works_progress_every,
+            expected_count_run=args.scienti_identified_works_expected_count_run,
+        ), ensure_ascii=False, indent=2, default=str))
+        sys.exit(0)
     
     if args.drop_mongodb:
         MongoClient(args.mongo_dburi).drop_database(args.mongo_dbname)
@@ -643,6 +683,7 @@ if __name__ == '__main__':
             measured_collection=args.minciencias_measured_products_collection,
             links_collection=args.minciencias_measurement_links_collection,
             target_collection=args.minciencias_enriched_graph_collection,
+            version=args.scienti_entity_version, publication_date=args.scienti_publication_date,
             batch_size=args.minciencias_measurement_batch_size,
             progress_every=args.minciencias_measurement_progress_every,
             replace=args.minciencias_measurement_replace,
@@ -720,6 +761,7 @@ if __name__ == '__main__':
             gruplac_collection=args.scienti_affiliations_gruplac_collection,
             gruplac_audit_name=args.scienti_affiliations_gruplac_audit_name,
             target_collection=args.scienti_affiliations_target_collection,
+            version=args.scienti_entity_version, publication_date=args.scienti_publication_date,
             batch_size=args.scienti_affiliations_batch_size,
             progress_every=args.scienti_affiliations_progress_every,
             expected_groups=args.scienti_affiliations_expected_groups,
@@ -748,6 +790,7 @@ if __name__ == '__main__':
             final_release_name=args.scienti_persons_final_release_name,
             final_release_audit_name=args.scienti_persons_final_release_audit_name,
             target_collection=args.scienti_persons_target_collection,
+            version=args.scienti_entity_version, publication_date=args.scienti_publication_date,
             batch_size=args.scienti_persons_batch_size,
             progress_every=args.scienti_persons_progress_every,
             expected_people=args.scienti_persons_expected_people,

@@ -2,6 +2,8 @@ import unittest
 
 from bs4 import BeautifulSoup
 import mongomock
+from datetime import datetime, timezone
+from unittest.mock import patch
 
 from yuku.gruplac_related_works import normalize_gruplac_document
 from yuku.scienti_affiliations import (
@@ -9,6 +11,8 @@ from yuku.scienti_affiliations import (
     AFFILIATION_FIELDS,
     AFFILIATION_PUBLICATIONS,
     ScientiAffiliationMaterializer,
+    build_group_affiliation,
+    split_institution_names,
 )
 
 
@@ -161,6 +165,24 @@ class ScientiAffiliationMaterializerTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "source audit is not passed"):
             self.materializer().run()
 
+    def test_current_parser_versions_can_materialize_audited_affiliations(self):
+        for version in ("3.4.0", "3.4.1"):
+            with self.subTest(version=version):
+                self.db.gruplac_normalized.update_many({}, {"$set": {"parser.version": version}})
+                self.db.scienti_gruplac_normalization_audits.update_one(
+                    {"_id": "gruplac_audit"}, {"$set": {"config.expected_parser_version": version}}
+                )
+                result = self.materializer("affiliations_" + version.replace(".", "_"),
+                                           "groups_" + version.replace(".", "_")).run()
+                self.assertEqual(result["documents"], 3)
+
+    def test_unknown_parser_version_is_still_rejected(self):
+        self.db.scienti_gruplac_normalization_audits.update_one(
+            {"_id": "gruplac_audit"}, {"$set": {"config.expected_parser_version": "3.99.0"}}
+        )
+        with self.assertRaisesRegex(RuntimeError, "required parser version"):
+            self.materializer().run()
+
     def test_refuses_resume_after_source_changes(self):
         materializer = self.materializer()
         materializer._prepare()
@@ -169,6 +191,57 @@ class ScientiAffiliationMaterializerTests(unittest.TestCase):
         })
         with self.assertRaisesRegex(RuntimeError, "sources changed"):
             materializer.run()
+
+    def test_splits_institution_lists_from_all_sources_and_deduplicates_names(self):
+        self.db.recognized_groups.update_one({"codigo_grupo": "COL0000001"}, {"$set": {
+            "instituciones_historicas": [{"año": 2024, "institucion": (
+                "FUNDACION SANTA FE DE BOGOTA; UNIVERSIDAD DE LOS ANDES; UNIVERSIDAD EL BOSQUE"
+            )}],
+        }})
+        self.db.gruplac_groups_data.update_one({"cod_grupo_gr": "COL0000001"}, {"$set": {
+            "inst_aval": "FUNDACION SANTA FE DE BOGOTA | UNIVERSIDAD DE LOS ANDES; UNIVERSIDAD EL BOSQUE",
+        }})
+        self.db.gruplac_normalized.update_one({}, {"$set": {
+            "institutions": [{"name": "FUNDACION SANTA FE DE BOGOTA; UNIVERSIDAD DE LOS ANDES"}],
+        }})
+        result = self.materializer().run()
+        group = self.db.affiliations_final.find_one({"_id": "COL0000001"})
+        self.assertEqual([item["name"] for item in group["relations"]], [
+            "FUNDACION SANTA FE DE BOGOTA", "UNIVERSIDAD DE LOS ANDES", "UNIVERSIDAD EL BOSQUE",
+        ])
+        self.assertEqual(set(group), {"_id"} | AFFILIATION_FIELDS)
+        self.assertEqual(result["documents"], 3)
+
+    def test_audit_rejects_compound_institution_regression_before_publication(self):
+        def invalid_builder(*args, **kwargs):
+            result = build_group_affiliation(*args, **kwargs)
+            if result["_id"] == "COL0000001":
+                result["relations"].append({"id": "", "types": [], "name": "Universidad A; Universidad B"})
+            return result
+
+        with patch("yuku.scienti_affiliations.build_group_affiliation", side_effect=invalid_builder):
+            with self.assertRaisesRegex(RuntimeError, "compound_institution_relation"):
+                self.materializer().run()
+        self.assertNotIn("affiliations_final", self.db.list_collection_names())
+
+
+class InstitutionListTests(unittest.TestCase):
+    def test_preserves_parentheses_hyphens_commas_and_conjunctions(self):
+        self.assertEqual(split_institution_names(
+            " ; Universidad A (Unidad X; Unidad Y) | Instituto de Ciencia, Salud y Tecnología - ICT; ;"
+        ), ["Universidad A (Unidad X; Unidad Y)", "Instituto de Ciencia, Salud y Tecnología - ICT"])
+
+    def test_anestesia_history_preserves_aliases_as_separate_atomic_labels(self):
+        result = build_group_affiliation("COL0034399", {
+            "nombre_grupo": "ANESTESIA",
+            "instituciones_historicas": [
+                {"año": 2017, "institucion": "FUNDACIÓN SANTA FÉ DE BOGOTÁ - FSFB; UNIVERSIDAD DE LOS ANDES - UNIANDES; UNIVERSIDAD EL BOSQUE"},
+                {"año": 2024, "institucion": "FUNDACION SANTA FE DE BOGOTA; UNIVERSIDAD DE LOS ANDES; UNIVERSIDAD EL BOSQUE"},
+            ],
+        }, [], {}, built_at=datetime(2026, 10, 16, tzinfo=timezone.utc))
+        names = [item["name"] for item in result["relations"]]
+        self.assertEqual(len(names), 5)
+        self.assertTrue(all(len(split_institution_names(name)) == 1 for name in names))
 
 
 if __name__ == "__main__":

@@ -86,6 +86,35 @@ class Yuku:
         """Return compact per-stage status for a full Scienti pipeline."""
         return pipeline_status(self.db, run_name)
 
+    def create_scienti_identified_works(
+        self, *, release_name: str, run_name: str, target_collection: str = "",
+        count_only: bool = False, batch_size: int = 500,
+        progress_every: int = 10000, expected_count_run: str = "",
+    ):
+        """Count or publish a separate, locally identified work snapshot."""
+        if target_collection == "current":
+            raise ValueError("current is reserved for the work-output publication pointer")
+        from yuku.scienti_identified_works import ScientiIdentifiedWorkSelector
+        if not count_only:
+            from yuku.minciencias_publication import filtered_target
+            target_collection = filtered_target(self.db, release_name, target_collection)
+        result = ScientiIdentifiedWorkSelector(
+            self.db, release_name=release_name, run_name=run_name,
+            target_collection=target_collection, count_only=count_only,
+            batch_size=batch_size, progress_every=progress_every,
+            expected_count_run=expected_count_run,
+        ).run()
+        if not count_only:
+            from yuku.minciencias_publication import EntityRetention, publish_filtered_current
+            with EntityRetention(self.db).lock():
+                publish_filtered_current(self.db, release_name, target_collection)
+        return result
+
+    def reconcile_scienti_dois(self, **kwargs):
+        """Create locally enriched views with optional DOI-only confirmation."""
+        from yuku.scienti_doi_reconciliation import ScientiDOIReconciler
+        return ScientiDOIReconciler(self.db, **kwargs).run()
+
     def materialize_scienti_affiliations(
         self,
         *,
@@ -94,12 +123,18 @@ class Yuku:
         open_data_collection: str,
         gruplac_collection: str,
         gruplac_audit_name: str,
-        target_collection: str,
+        target_collection: str = "",
         batch_size: int = 500,
         progress_every: int = 1000,
         expected_groups: int = 0,
+        publish_pointer: bool = True,
+        version="auto", publication_date=None,
     ):
         """Create and atomically publish an audited ScienTI group snapshot."""
+        from yuku.minciencias_publication import resolve_target
+        target_collection = resolve_target(self.db, "affiliations", target=target_collection,
+            version=version, date=publication_date, run_name=run_name,
+            run_namespace="scienti_affiliation_materialization_runs")
         return ScientiAffiliationMaterializer(
             self.db,
             run_name=run_name,
@@ -111,6 +146,7 @@ class Yuku:
             batch_size=batch_size,
             progress_every=progress_every,
             expected_groups=expected_groups,
+            publish_pointer=publish_pointer,
         ).run()
 
     def materialize_scienti_persons(
@@ -130,12 +166,18 @@ class Yuku:
         affiliation_collection: str,
         final_release_name: str,
         final_release_audit_name: str,
-        target_collection: str,
+        target_collection: str = "",
         batch_size: int = 500,
         progress_every: int = 10000,
         expected_people: int = 0,
+        publish_pointer: bool = True,
+        version="auto", publication_date=None,
     ):
         """Create and publish an audited DOI-only ScienTI person snapshot."""
+        from yuku.minciencias_publication import resolve_target
+        target_collection = resolve_target(self.db, "person", target=target_collection,
+            version=version, date=publication_date, run_name=run_name,
+            run_namespace="scienti_person_materialization_runs")
         return ScientiPersonMaterializer(
             self.db,
             run_name=run_name,
@@ -156,6 +198,7 @@ class Yuku:
             batch_size=batch_size,
             progress_every=progress_every,
             expected_people=expected_people,
+            publish_pointer=publish_pointer,
         ).run()
 
     def cvlav_private_profile(self, soup: BeautifulSoup):
@@ -775,6 +818,11 @@ class Yuku:
         publish_pointer: bool = True,
     ):
         """Build and atomically publish an audited, checkpointed full graph."""
+        if publish_pointer:
+            from yuku.minciencias_publication import parse_name
+            spec = parse_name(collection, required=True)
+            if spec["entity"] != "works" or spec["filtered"]:
+                raise ValueError("a published full graph must be a canonical works collection")
         gate = validate_scienti_graph_gate(
             self.db,
             snapshot_run_name=run_name,
@@ -867,7 +915,7 @@ class Yuku:
         self,
         *,
         run_name: str,
-        target_collection: str,
+        target_collection: str = "",
         graph_collection: str = "",
         measured_collection: str = "minciencias_measured_products",
         links_collection: str = "minciencias_measured_product_links",
@@ -876,8 +924,13 @@ class Yuku:
         progress_every: int = 10000,
         replace: bool = False,
         publish_pointer: bool = True,
+        version="auto", publication_date=None,
     ):
         """Publish a lossless graph copy enriched with linked measurements."""
+        from yuku.minciencias_publication import resolve_target
+        target_collection = resolve_target(self.db, target_entity, target=target_collection,
+            version=version, date=publication_date, run_name=run_name,
+            run_namespace="minciencias_measurement_runs")
         if not graph_collection:
             publication = self.db["scienti_work_graph_publications"].find_one(
                 {"_id": "current"}
@@ -905,13 +958,20 @@ class Yuku:
         collections: dict[str, str],
         materialization_runs: dict[str, str],
         audit_name: str = "",
+        publish_pointer: bool = True,
     ):
         """Publish works, projects, patents and events as one audited release."""
+        from yuku.minciencias_publication import parse_name
+        for role, collection in collections.items():
+            spec = parse_name(collection, required=True)
+            if spec["entity"] != role or spec["filtered"]:
+                raise ValueError("final release collections must match their entity names")
         return ScientiFinalReleaseManager(self.db).publish(
             release_name=release_name,
             collections=collections,
             materialization_runs=materialization_runs,
             audit_name=audit_name,
+            publish_pointer=publish_pointer,
         )
 
     def publish_scienti_kahi_release(
@@ -924,6 +984,7 @@ class Yuku:
         audit_name: str = "",
         batch_size: int = 1000,
         progress_every: int = 100000,
+        publish_pointer: bool = True,
     ):
         """Validate references and atomically publish six Kahi entities."""
         return ScientiFinalReleaseManager(self.db).publish_with_identities(
@@ -934,6 +995,7 @@ class Yuku:
             audit_name=audit_name,
             batch_size=batch_size,
             progress_every=progress_every,
+            publish_pointer=publish_pointer,
         )
 
     def audit_scienti_bibliographic_enrichment(

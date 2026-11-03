@@ -98,8 +98,16 @@ class FrozenScientiPipeline(ScientiFullPipeline):
         return result
 
     def _gruplac_download(self):
-        # Incomplete-profile verification can refresh its inputs. Give it copies
-        # so the original raw HTML and download state remain untouched.
+        raw, state = self.frozen['gruplac_raw'], self.frozen['gruplac_state']
+        if (self.names['gruplac_raw'], self.names['gruplac_downloads']) == (raw, state):
+            # Read the proven HTML in place: no copy, no portal refresh.
+            if self.config['processing'].get('verify_incomplete_gruplac', True):
+                raise RuntimeError('Frozen GrupLAC sources are read-only; '
+                                   'set processing.verify_incomplete_gruplac to false')
+            return {'status': 'reused_frozen_source',
+                    'raw': self._source(raw), 'state': self._source(state)}
+        # Legacy sessions verify incomplete groups against the portal, which can
+        # rewrite their inputs; they keep working on copies of the originals.
         return {'status': 'copied_frozen_source',
                 'raw': self._copy_source(self.frozen['gruplac_raw'], self.names['gruplac_raw']),
                 'state': self._copy_source(self.frozen['gruplac_state'], self.names['gruplac_downloads'])}

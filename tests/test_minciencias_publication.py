@@ -303,3 +303,27 @@ def test_real_mongo_current_guard_and_scoped_retention():
     finally:
         client.drop_database(database_name)
         client.close()
+
+
+def test_entity_normalizations_reached_through_graph_collections_are_temporaries(db):
+    # 20261017: the four scienti_*_normalized_* collections were never retired.
+    projects = collection_name("projects", 4, "20261009")
+    normalized = {entity: f"scienti_{entity}_normalized_r" for entity in ("works", "projects", "patents", "events")}
+    for collection in [projects, "scienti_projects_graph_r", *normalized.values()]:
+        db[collection].insert_one({"_id": "row"})
+    db.minciencias_measurement_runs.insert_one({"_id": "projects_final", "status": "complete", "config": {
+        "graph_collection": "scienti_projects_graph_r", "target_collection": projects}})
+    db.scienti_entity_graph_runs.insert_one({"_id": "r_projects_graph", "status": "complete", "config": {
+        "entity_run_name": "r_entities", "source_collection": normalized["projects"],
+        "target_collection": "scienti_projects_graph_r"}})
+    db.scienti_entity_normalization_runs.insert_one({"_id": "r_entities", "status": "complete",
+                                                     "config": {"destinations": normalized}})
+    release = {"_id": "release_r", "status": "published", "published_at": 1, "audit": "release_r_audit",
+               "collections": {"projects": projects}, "materialization_runs": {"projects": "projects_final"}}
+    db.scienti_final_release_audits.insert_one({"_id": "release_r_audit", "status": "passed",
+        "critical_anomalies": 0, "collections": release["collections"],
+        "materialization_runs": release["materialization_runs"]})
+    register_release(db, release)
+    record = db[CATALOG].find_one({"_id": projects})
+    assert set(normalized.values()) | {"scienti_projects_graph_r"} <= set(record["temporaries"])
+    assert not set(normalized.values()) & set(record["source_collections"])

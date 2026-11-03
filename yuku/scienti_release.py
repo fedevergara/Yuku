@@ -125,6 +125,25 @@ class ScientiFinalReleaseManager:
                 from yuku.scienti_types import type_anomalies
                 entity_checks["invalid_types"] = sum(type_anomalies(item.get("types"), entity=entity)
                     for item in self.db[collection].find({}, {"types": 1}))
+                if entity in {"projects", "patents"}:
+                    from yuku.scienti_product_quality import product_quality_findings
+                    entity_checks["invalid_product_metadata"] = sum(
+                        bool(product_quality_findings(item, entity))
+                        for item in self.db[collection].find({}, {
+                            "titles": 1, "date_init": 1, "year_init": 1,
+                            "date_end": 1, "year_end": 1,
+                            "source_metadata.occurrences.source_kind": 1,
+                            "source_metadata.occurrences.metadata.start_date": 1,
+                            "source_metadata.occurrences.metadata.end_date": 1,
+                            "source_metadata.occurrences.metadata.year": 1,
+                            "source_metadata.occurrences.metadata.presentation_date": 1,
+                            "source_metadata.occurrences.metadata.language": 1,
+                            "source_metadata.minciencias.measurements.presentation_date": 1,
+                            "source_metadata.minciencias.measurements.presentation_year": 1,
+                            "source_metadata.minciencias.measured_products.measurements.presentation_date": 1,
+                            "source_metadata.minciencias.measured_products.measurements.presentation_year": 1,
+                        })
+                    )
             checks.update(
                 {
                     f"{entity}_{key}": value

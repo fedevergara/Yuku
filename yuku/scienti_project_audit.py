@@ -631,10 +631,8 @@ class ScientiProjectSemanticAudit:
             if summary:
                 summaries.add(semantic_key(summary))
             start = parse_scienti_date(occurrence_metadata.get("start_date"))
-            end = parse_scienti_date(
-                occurrence_metadata.get("end_date")
-                or occurrence_metadata.get("projected_end_date")
-            )
+            # A planned end is not evidence of an actual completion date.
+            end = parse_scienti_date(occurrence_metadata.get("end_date"))
             self.start_precision[start["status"] if start["status"] != "valid" else start["precision"]] += 1
             self.end_precision[end["status"] if end["status"] != "valid" else end["precision"]] += 1
             if start["status"] == "invalid":

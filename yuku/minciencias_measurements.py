@@ -21,6 +21,9 @@ from yuku.cvlac_work_graph import (
 )
 from yuku.scienti_routing import IMPACTU_CATALOG, route_minciencias
 from yuku.scraping_type_catalog import catalog_identity
+from yuku.scienti_product_quality import (
+    PRODUCT_QUALITY_VERSION, actual_date, clean_product_text, placeholder_title,
+)
 
 
 MEASUREMENT_SCHEMA_VERSION = "kahi-works-minciencias-measurement-v1"
@@ -258,6 +261,9 @@ def standalone_official_entity(
         ],
         "minciencias": minciencias,
     }
+    if target_entity in {"projects", "patents"}:
+        from yuku.scienti_types import materialize_types
+        materialize_types(output, entity=target_entity)
     return complete_kahi_entity_shape(output, target_entity)
 
 
@@ -288,11 +294,11 @@ def _measurement_key(value: dict[str, Any]) -> tuple[Any, ...]:
             "category",
             "reported_title",
         )
-    )
+    ) + tuple(str(finding.get("raw_value")) for finding in value.get("normalization_findings", []))
 
 
 def measurement_from_row(row: dict[str, Any]) -> dict[str, Any]:
-    return {
+    output = {
         "convocatoria_id": normalize_convocatoria_id(row.get("id_convocatoria")),
         "convocatoria": str(row.get("nme_convocatoria") or "").strip(),
         "convocatoria_date": source_timestamp(row.get("ano_convo")),
@@ -308,6 +314,16 @@ def measurement_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "category": str(row.get("nme_categoria_pd") or "").strip(),
         "reported_title": str(row.get("nme_producto_pd") or "").strip(),
     }
+    route = route_minciencias(row.get("nme_clase_pd"), row.get("nme_tipologia_pd"))
+    if route and route["entity"] in {"projects", "patents"}:
+        raw = row.get("fcreacion_pd")
+        if raw not in (None, "") and not actual_date(raw):
+            output["presentation_date"] = None
+            output["presentation_year"] = None
+            output["normalization_findings"] = [{
+                "kind": "invalid_actual_date", "field": "presentation_date", "raw_value": raw,
+            }]
+    return output
 
 
 def target_entity(measurements: Iterable[dict[str, Any]]) -> tuple[str, list[str]]:
@@ -376,10 +392,15 @@ def normalize_measured_product(
             norm_text(value.get("reported_title") or ""),
         )
     )
+    entity, excluded_targets = target_entity(measurements)
     titles: list[dict[str, Any]] = []
     seen_titles: set[str] = set()
     for measurement in measurements:
         title = measurement.get("reported_title") or ""
+        if entity in {"projects", "patents"}:
+            title = clean_product_text(title)
+            if placeholder_title(title):
+                continue
         title_key = normalize_title(title)
         if title_key and title_key not in seen_titles:
             titles.append({"title": title, "lang": "", "source": "minciencias"})
@@ -498,7 +519,11 @@ def normalize_measured_product(
             }
         )
 
-    entity, excluded_targets = target_entity(measurements)
+    excluded_title = entity in {"projects", "patents"} and not titles
+    if excluded_title:
+        # Keep the normalized source evidence for audit, but never route an
+        # unusable product into any final entity or measurement linker.
+        entity = "excluded"
     entry = empty_kahi_work()
     entry.update(
         {
@@ -530,6 +555,11 @@ def normalize_measured_product(
             },
         }
     )
+    if excluded_title:
+        entry["bibliographic_info"]["minciencias"]["quality_exclusion"] = "missing_or_placeholder_title"
+    elif entity in {"projects", "patents"}:
+        from yuku.scienti_types import materialize_types
+        materialize_types(entry, entity=entity)
     return entry
 
 
@@ -851,9 +881,9 @@ def enrich_graph_work(
     output["updated"].append({"source": "minciencias", "time": enriched_at})
     output["authors"] = original_authors
     output["author_count"] = len(original_authors)
-    if target_entity == "works":
+    if target_entity in {"works", "projects", "patents"}:
         from yuku.scienti_types import materialize_types
-        materialize_types(output)
+        materialize_types(output, entity=target_entity)
     return output
 
 
@@ -918,6 +948,7 @@ class MincienciasMeasurementPipeline:
             raise ValueError("normalization source and destination must be different")
         config = {
             "schema_version": MEASUREMENT_SCHEMA_VERSION,
+            "product_quality_version": PRODUCT_QUALITY_VERSION,
             "scraping_type_catalog": catalog_identity(),
             "source_collection": source_collection,
             "destination_collection": destination_collection,
@@ -1126,6 +1157,7 @@ class MincienciasMeasurementPipeline:
             raise ValueError("links destination must differ from both source collections")
         config = {
             "link_version": MEASUREMENT_LINK_VERSION,
+            "product_quality_version": PRODUCT_QUALITY_VERSION,
             "measured_collection": measured_collection,
             "graph_collection": graph_collection,
             "links_collection": links_collection,
@@ -1337,6 +1369,7 @@ class MincienciasMeasurementPipeline:
             raise ValueError("enriched target must differ from every source collection")
         config = {
             "schema_version": MEASUREMENT_SCHEMA_VERSION,
+            "product_quality_version": PRODUCT_QUALITY_VERSION,
             "scraping_type_catalog": catalog_identity(),
             "graph_collection": graph_collection,
             "measured_collection": measured_collection,

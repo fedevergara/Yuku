@@ -24,6 +24,10 @@ from yuku.gruplac_related_works import enrich_exact_section
 from yuku.minciencias_measurements import empty_kahi_work
 from yuku.scraping_type_catalog import catalog_identity, classification_context
 from yuku.scienti_events import normalize_event_type
+from yuku.scienti_product_quality import (
+    clean_product_text, explicit_language, placeholder_title,
+    reconcile_project_dates, date_consensus, actual_date,
+)
 from yuku.scienti_routing import (
     ENTITY_ROUTER_VERSION,
     GRUPLAC_DIRECTED_SECTIONS,
@@ -36,7 +40,7 @@ from yuku.scienti_routing import (
 
 
 ENTITY_SCHEMA_VERSION = "kahi-scienti-entities-v1"
-ENTITY_NORMALIZER_VERSION = "scienti-entity-normalizer-v5"
+ENTITY_NORMALIZER_VERSION = "scienti-entity-normalizer-v6"
 ENTITY_RUNS = "scienti_entity_normalization_runs"
 ENTITY_AUDITS = "scienti_entity_normalization_audits"
 BOGOTA = ZoneInfo("America/Bogota")
@@ -344,6 +348,9 @@ def _identity(
     title = _title(record)
     title_key = exact_key(title)
     year = _year(record.get("year") or record.get("start_date"))
+    if entity in {"projects", "patents"}:
+        parsed = actual_date(record.get("start_date") or record.get("presentation_date") or record.get("year"))
+        year = parsed["year"] if parsed else None
     source_scope = f"{source['kind']}|{source['id']}|{source['index']}"
     if entity == "works" and route.get("family") in THESIS_FAMILIES:
         students = sorted(
@@ -394,13 +401,13 @@ def _occurrence_metadata(entity: str, record: dict[str, Any]) -> dict[str, Any]:
         ),
         "projects": (
             "project_type", "start_date", "projected_end_date", "end_date",
-            "duration", "summary",
+            "duration", "summary", "year", "language",
         ),
         "patents": (
             "registration_number", "presentation_date", "request_route",
             "industrial_publication_gazette", "applicant", "holder",
             "availability", "funding_institution", "cycle_type", "website",
-            "administrative_act", "country", "affiliation", "year",
+            "administrative_act", "country", "affiliation", "year", "language",
         ),
         "events": (
             "event_type", "scope", "start_date", "end_date", "location", "city",
@@ -441,6 +448,20 @@ def normalize_occurrence(
     normalization_findings: list[dict[str, str]] = []
     if route["entity"] == "events":
         record, normalization_findings = _sanitize_event_record(record)
+    if route["entity"] in {"projects", "patents"}:
+        record["title"] = clean_product_text(record.get("title"))
+        if placeholder_title(record["title"]):
+            return None
+    if route["entity"] == "patents":
+        for field in ("presentation_date", "year"):
+            raw_value = record.get(field)
+            if raw_value not in (None, "") and not actual_date(raw_value):
+                normalization_findings.append({"kind": "invalid_actual_date", "field": field, "raw_value": raw_value})
+                record[field] = None
+        raw_registration = record.get("registration_number")
+        if raw_registration and not registration_key(raw_registration):
+            normalization_findings.append({"kind": "unusable_registration", "field": "registration_number", "raw_value": raw_registration})
+            record["registration_number"] = None
     title = _title(record)
     if not title:
         return None
@@ -496,6 +517,21 @@ def normalize_occurrence(
         owner = _person(profile_name, profile_id)
         if owner:
             authors.append(owner)
+        if entity in {"projects", "patents"}:
+            # Explicit coauthors are evidence; a group membership list is not.
+            for value in record.get("authors") or []:
+                name = str(value.get("full_name") or value.get("name") or "") if isinstance(value, dict) else str(value)
+                code = str(value.get("cod_rh") or value.get("id") or "") if isinstance(value, dict) else ""
+                if not re.fullmatch(r"\d{10}", code):
+                    code = profile_id if exact_key(name) == exact_key(profile_name) else ""
+                if code == profile_id and profile_name:
+                    name = profile_name
+                name = clean_product_text(name)
+                if not name:
+                    continue
+                person = _person(name, code)
+                if person:
+                    authors.append(person)
         if entity == "events":
             for participant in record.get("participants") or []:
                 name = str(participant.get("name") or "") if isinstance(participant, dict) else str(participant)
@@ -503,8 +539,9 @@ def normalize_occurrence(
                 if person:
                     authors.append(person)
     else:
-        for name in record.get("authors") or []:
-            person = _resolve_person(str(name), members)
+        for value in record.get("authors") or []:
+            name = str(value.get("full_name") or value.get("name") or "") if isinstance(value, dict) else str(value)
+            person = _resolve_person(name, members)
             if person:
                 authors.append(person)
 
@@ -562,10 +599,8 @@ def normalize_occurrence(
     elif entity == "projects":
         document = empty_kahi_project()
         document["abstract"] = str(record.get("summary") or "")
-        document["date_init"] = _timestamp(record.get("start_date"))
-        document["date_end"] = _timestamp(record.get("end_date"))
-        document["year_init"] = _year(record.get("start_date") or record.get("year"))
-        document["year_end"] = _year(record.get("end_date"))
+        document["date_init"], document["year_init"] = date_consensus([record.get("start_date") or record.get("year")])
+        document["date_end"], document["year_end"] = date_consensus([record.get("end_date")])
     elif entity == "events":
         document = empty_kahi_event()
         document["date_held"] = _timestamp(record.get("start_date"))
@@ -577,7 +612,7 @@ def normalize_occurrence(
     document.update(
         {
             "_id": entity_id,
-            "titles": [{"title": title, "lang": "es", "source": "minciencias"}],
+            "titles": [{"title": title, "lang": explicit_language(record) if entity in {"projects", "patents"} else "es", "source": "minciencias"}],
             "updated": [{"source": "minciencias", "time": normalized_at}],
             "types": [
                 {
@@ -725,6 +760,12 @@ def merge_entity_documents(left: dict[str, Any], right: dict[str, Any]) -> dict[
         + role_resolutions,
         _dict_key,
     )
+    entity = left_meta.get("target_entity")
+    if entity == "projects":
+        reconcile_project_dates(output)
+    if entity in {"projects", "patents"}:
+        from yuku.scienti_types import materialize_types
+        materialize_types(output, entity=entity)
     return output
 
 
@@ -759,7 +800,7 @@ def iter_cvlac_entities(
                     record_index=index,
                     record=record,
                     route=route,
-                    reason="missing_meaningful_title",
+                    reason="placeholder_title" if placeholder_title(record.get("title")) else "missing_meaningful_title",
                 )
 
 
@@ -799,7 +840,7 @@ def iter_gruplac_entities(
                 record_index=index,
                 record=record,
                 route=route,
-                reason="missing_meaningful_title",
+                reason="placeholder_title" if placeholder_title(record.get("title")) else "missing_meaningful_title",
             )
 
 

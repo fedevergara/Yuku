@@ -27,7 +27,7 @@ from yuku.minciencias_publication import (
 
 PIPELINE_RUNS = "scienti_pipeline_runs"
 PIPELINE_LOCKS = "scienti_pipeline_locks"
-PIPELINE_VERSION = "scienti-full-pipeline-v17"
+PIPELINE_VERSION = "scienti-full-pipeline-v18"
 
 
 STAGES = (
@@ -305,6 +305,10 @@ class ScientiFullPipeline:
         if previous and self.config.get("scraping_type_catalog") != identity:
             raise ValueError("scraping type catalog changed; use a new pipeline session")
         self.config["scraping_type_catalog"] = identity
+        from yuku.scienti_product_quality import PRODUCT_QUALITY_VERSION
+        if previous and self.config.get("product_quality_version") != PRODUCT_QUALITY_VERSION:
+            raise ValueError("product quality policy changed; use a new pipeline session")
+        self.config["product_quality_version"] = PRODUCT_QUALITY_VERSION
         self.config_hash = _fingerprint(
             {key: value for key, value in self.config.items() if key != "config_path"}
         )

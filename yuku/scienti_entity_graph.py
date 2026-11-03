@@ -18,18 +18,22 @@ from yuku.scraping_type_catalog import catalog_identity
 from yuku.cvlac_work_graph import is_generic_title
 from yuku.scienti_entities import (
     ENTITY_AUDITS,
+    ENTITY_NORMALIZER_VERSION,
     ENTITY_RUNS,
     merge_entity_documents,
     registration_key,
 )
 from yuku.scienti_routing import exact_key
+from yuku.scienti_product_quality import (
+    actual_date, clean_product_text, placeholder_title, reconcile_project_dates,
+)
 
 
 ENTITY_GRAPH_RUNS = "scienti_entity_graph_runs"
 ENTITY_GRAPH_REVIEWS = "scienti_entity_graph_reviews"
 ENTITY_GRAPH_VERSIONS = {
-    "projects": "scienti-project-graph-v1",
-    "patents": "scienti-patent-graph-v1",
+    "projects": "scienti-project-graph-v2",
+    "patents": "scienti-patent-graph-v2",
 }
 RUN_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,79}")
 COLLECTION_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,119}")
@@ -48,10 +52,8 @@ def _first_title(document: dict[str, Any]) -> str:
 
 
 def _year(value: Any) -> int | None:
-    if isinstance(value, int) and 1900 <= value <= 2100:
-        return value
-    match = YEAR_RE.search(str(value or ""))
-    return int(match.group(1)) if match else None
+    parsed = actual_date(value)
+    return parsed["year"] if parsed else None
 
 
 def _occurrences(document: dict[str, Any]) -> list[dict[str, Any]]:
@@ -153,16 +155,24 @@ def _constraint_values(
 def graph_key_document(entity: str, document: dict[str, Any]) -> dict[str, Any]:
     """Create one bounded exact-candidate record for a normalized entity."""
     source_id = str(document.get("_id") or "")
-    title = _first_title(document)
+    title = clean_product_text(_first_title(document))
     title_key = exact_key(title)
     subtype = _project_type(document) if entity == "projects" else _patent_namespace(document)
     anchors = _stable_anchors(document)
     constraints = _constraint_values(entity, document)
+    strong_short_title = bool(
+        entity == "patents" and not placeholder_title(title)
+        and is_generic_title(title)
+        and len(constraints["registrations"]) == 1
+        and len(constraints["countries"]) == 1
+        and any(anchor.startswith("author:") for anchor in anchors)
+    )
     eligible = bool(
         title_key
         and subtype
         and anchors
-        and not is_generic_title(title)
+        and not placeholder_title(title)
+        and (not is_generic_title(title) or strong_short_title)
     )
     fingerprint = f"{entity}|{subtype}|{title_key}"
     group_key = (
@@ -170,6 +180,7 @@ def graph_key_document(entity: str, document: dict[str, Any]) -> dict[str, Any]:
         if eligible
         else "source:{}".format(source_id)
     )
+    dates = [d for o in _occurrences(document) if (d := actual_date((o.get("metadata") or {}).get("presentation_date")))] if strong_short_title else []
     return {
         "_id": source_id,
         "source_id": source_id,
@@ -185,6 +196,9 @@ def graph_key_document(entity: str, document: dict[str, Any]) -> dict[str, Any]:
             (document.get("source_metadata") or {}).get("identity_rule") or ""
         ),
         "merge_eligible": eligible,
+        "strong_short_title": strong_short_title,
+        "presentation_months": sorted({f'{d["year"]:04d}-{d["month"]:02d}' for d in dates if d["month"]}),
+        "presentation_days": sorted({f'{d["year"]:04d}-{d["month"]:02d}-{d["day"]:02d}' for d in dates if d["day"]}),
     }
 
 
@@ -194,7 +208,7 @@ class _UnionFind:
         self.constraints = [
             {
                 field: set(row.get(field) or [])
-                for field in ("years", "registrations", "countries")
+                for field in ("years", "registrations", "countries", "presentation_months", "presentation_days")
             }
             for row in rows
         ]
@@ -208,7 +222,7 @@ class _UnionFind:
 
     def compatible(self, left: int, right: int) -> tuple[bool, str]:
         left_root, right_root = self.find(left), self.find(right)
-        for field in ("years", "registrations", "countries"):
+        for field in ("years", "registrations", "countries", "presentation_months", "presentation_days"):
             values = (
                 self.constraints[left_root][field]
                 | self.constraints[right_root][field]
@@ -302,6 +316,9 @@ class ScientiExactEntityGraphBuilder:
         if self.entity_run_name:
             run = self.db[ENTITY_RUNS].find_one({"_id": self.entity_run_name}) or {}
             destinations = (run.get("config") or {}).get("destinations") or {}
+            source_version = (run.get("config") or {}).get("normalizer_version")
+            if source_version and source_version != ENTITY_NORMALIZER_VERSION:
+                raise RuntimeError("entity graph source uses an older normalizer; re-normalize the retained sources")
             if run.get("status") != "complete" or destinations.get(self.entity) != self.source_collection:
                 raise RuntimeError("entity graph source is not a completed normalization destination")
             audit = self.db[ENTITY_AUDITS].find_one({"_id": self.entity_run_name}) or {}
@@ -472,6 +489,9 @@ class ScientiExactEntityGraphBuilder:
                 )
                 if not shared:
                     continue
+                strong_short = rows[left].get("strong_short_title") or rows[right].get("strong_short_title")
+                if strong_short and not any(value.startswith("author:") for value in shared):
+                    continue
                 compatible, reason = graph.compatible(left, right)
                 if not compatible:
                     self._review(reason, [rows[left], rows[right]])
@@ -486,6 +506,8 @@ class ScientiExactEntityGraphBuilder:
                     continue
                 anchor_kind = "author" if any(value.startswith("author:") for value in shared) else "group"
                 rule = f"exact_title_subtype_shared_{anchor_kind}_compatible_constraints"
+                if strong_short:
+                    rule = "exact_short_title_registration_country_author_compatible_dates"
                 if graph.union(left, right, rule):
                     self.metrics["automatic_edges"] += 1
         grouped: dict[int, list[int]] = defaultdict(list)
@@ -561,6 +583,8 @@ class ScientiExactEntityGraphBuilder:
             "evidence": evidence,
             "conservative_exact_matching": True,
         }
+        if self.entity == "projects":
+            reconcile_project_dates(output)
         return output
 
     def _materialize_group(

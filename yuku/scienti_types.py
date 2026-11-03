@@ -62,6 +62,10 @@ def validate_types(entries, *, entity="works", normalize_provider=True):
                 reason = "type_belongs_to_other_entity"
             else:
                 cleaned["type"] = canonical
+                if entity in {"projects", "patents"}:
+                    # ImpactU is a flat target vocabulary, not a native level.
+                    cleaned.pop("level", None)
+                    cleaned.pop("parent", None)
         elif source in {"cvlac", "gruplac", "scienti", "minciencias"}:
             # Legacy Yuku labels are accepted as input only. The catalog's
             # evidence source never becomes the provider of a scraped value.

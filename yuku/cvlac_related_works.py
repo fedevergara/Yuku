@@ -36,7 +36,8 @@ IDENTIFIER_SPAN_RE = re.compile(
     r"|\b10\.\d{4,9}/[^\s,;<>\"]+|\bhttps?://[^\s,;<>\"]+",
     re.IGNORECASE,
 )
-VALID_PAGES_RE = re.compile(r"^[0-9]+(?:\s*-\s*[0-9]+)?$")
+PAGE_TOKEN = r"[A-Za-z]?[0-9]+[A-Za-z]?"  # e0123, S56, newspaper 6A
+VALID_PAGES_RE = re.compile(r"^" + PAGE_TOKEN + r"(?:\s*-\s*" + PAGE_TOKEN + r")?$")
 VALID_LANGUAGE_RE = re.compile(r"^[^\W\d_]+(?:[ /-][^\W\d_]+){0,5}$")
 SUSPICIOUS_PUBLISHER_RE = re.compile(
     r"^(?:Autores\s*:|v\.(?=\s|:|$)|(?:vol|p[aá]gs?)\.?(?=\s|:|$)|"
@@ -48,6 +49,9 @@ SUSPICIOUS_PUBLICATION_PLACE_RE = re.compile(
     r"^(?:(?:19|20)\d{2}|(?:ISBN|ISSN|Autores?|Edici[oó]n|Serie)\b)",
     re.IGNORECASE,
 )
+
+# Labels that follow an empty "v." slot are not volumes ("v. pags. Areas:").
+VOLUME_LABEL_WORDS = {"p", "pag", "pags", "paginas", "fasc", "areas", "sectores", "palabras"}
 
 LABEL_ALIASES = {
     "nombre del producto": "product_name",
@@ -497,12 +501,12 @@ def extract_pages(text: str, source_fields: dict[str, str]) -> tuple[str, str, s
     if not value:
         match = re.search(
             r"\bp(?:(?:[aá]gs?)|(?:[aá]ginas))?\.\s*:?[ ]*"
-            r"([0-9]+(?:\s*-\s*[0-9]+)?)",
+            r"(" + PAGE_TOKEN + r"(?:\s*-\s*" + PAGE_TOKEN + r")?)\b",
             text or "",
             flags=re.IGNORECASE,
         )
         value = clean_pages_value(match.group(1)) if match else ""
-    numbers = re.fullmatch(r"([0-9]+)(?:\s*-\s*([0-9]+))?", value)
+    numbers = re.fullmatch(r"(" + PAGE_TOKEN + r")(?:\s*-\s*(" + PAGE_TOKEN + r"))?", value)
     if not numbers:
         return value, "", ""
     start = numbers.group(1)
@@ -519,11 +523,12 @@ def extract_volume(text: str) -> str:
         r"\bv\.\s*:?\s*([^,;]*?)"
         r"(?=\s*,?\s*(?:fasc\.?|ISBN|ISSN|DOI|ed|Editorial)\s*:|"
         r"\s*,?\s*p(?:[aá]gs?|[aá]ginas)?\.?\s*:?(?=\s*(?:\d|[,;]|$))|"
-        r"\s*,?\s*(?:19|20)\d{2}\b|$)",
+        r"\s*,?\s*(?:19|20)\d{2}\b|\s+(?:Palabras|Areas|Sectores)\s*:|$)",
         text or "",
         flags=re.IGNORECASE,
     )
-    return clean_bibliographic_value(match.group(1)) if match else ""
+    value = clean_bibliographic_value(match.group(1)) if match else ""
+    return "" if norm_text(value) in VOLUME_LABEL_WORDS else value
 
 
 def extract_title(
@@ -836,6 +841,9 @@ def parse_blockquote(profile_id: str, section_title: str, blockquote, profile_au
         from yuku.scienti_journals import journal_context
         record.update(journal_context(text, title, source_fields=source_fields,
                                       country=record["country"]))
+    else:
+        from yuku.scienti_journals import enrich_editorial_medium
+        enrich_editorial_medium(record)
     return record
 
 

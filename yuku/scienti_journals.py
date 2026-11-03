@@ -3,7 +3,7 @@
 import re
 
 from yuku.cvlac_related_works import (
-    clean_bibliographic_value, clean_text, extract_publisher, norm_text,
+    VOLUME_LABEL_WORDS, clean_bibliographic_value, clean_text, extract_publisher, norm_text,
 )
 
 JOURNAL_RULE = "scienti-explicit-journal-v1"
@@ -21,7 +21,7 @@ COUNTRY_LABELS = tuple(sorted((
     "Rusia", "Sudáfrica", "Sudafrica", "United States", "United Kingdom",
 ), key=len, reverse=True))
 ISSUE_RE = re.compile(
-    r"\b(?:fasc(?:[ií]culo)?|issue|n[uú]mero)\.?\s*:?\s*(.*?)"
+    r"\b(?:fasc(?:[ií]culo)?|issue|n[uú]mero)\b\.?\s*:?\s*(.*?)"
     r"(?=\s*,?\s*(?:p(?:[aá]gs?|[aá]ginas)?\.?|DOI|ISSN|ISBN|ed|Editorial|Autores?)"
     r"\s*[:.]|[,;]|$)", re.I,
 )
@@ -54,6 +54,7 @@ def journal_context(text, title, *, source_fields=None, country=""):
             # split an unbounded string of words into guessed country/name.
             if country and re.match(re.escape(country) + r"\s*[,.;]", slot, re.I):
                 slot = re.sub(r"^" + re.escape(country) + r"\s*[,.;]\s*", "", slot, flags=re.I)
+                slot = re.sub(r"^(?:19|20)\d{2}\s*[,.;]\s*", "", slot)
                 name = clean_bibliographic_value(slot)
             elif legacy and country and re.match(re.escape(country) + r"\s+\S", slot, re.I):
                 # The parser bounded the country by its <br>; the rest is the name.
@@ -69,7 +70,9 @@ def journal_context(text, title, *, source_fields=None, country=""):
     if (len(name) > 500 or re.search(r"\b(?:DOI|ISBN|Autores?|Editorial|ed|vol|pags)\s*[:.]", name, re.I)
             or norm_text(name) in {"", "n/a", "na", "0", "no disponible"}):
         name = ""
-    issue = ISSUE_RE.search(text)
+    # Search after the title: "Número 1!" inside a title is not an issue.
+    anchor = re.search(re.escape(title), text, re.I) if title else None
+    issue = ISSUE_RE.search(text[anchor.end():] if anchor else text)
     issue = clean_bibliographic_value(issue.group(1)) if issue else ""
     if len(issue) > 40 or norm_text(issue) in {"n/a", "na", "0"}:
         issue = ""
@@ -81,9 +84,30 @@ def journal_context(text, title, *, source_fields=None, country=""):
     from yuku.cvlac_related_works import clean_publisher_value
     publisher = (clean_publisher_value(publisher.group(1)) if publisher
                  else extract_publisher(text, fields))
-    volume = re.search(r"\b(?:v\.|vol(?:umen)?\.?\s*:)\s*([\w.-]+)", text, re.I)
-    return {"journal_name": name, "issue": issue, "publisher": publisher,
-            "volume": clean_bibliographic_value(volume.group(1)) if volume else ""}
+    volume = re.search(r"\b(?:v\.|vol(?:umen)?\.?\s*:)\s*([\w./-]+)(?![\w./-]|\s*:)", text, re.I)
+    volume = clean_bibliographic_value(volume.group(1)) if volume else ""
+    if (norm_text(volume) in {"n", "na", "n/a"} | VOLUME_LABEL_WORDS
+            or not re.search(r"[0-9IVXLCivxlc]", volume)):
+        volume = ""
+    return {"journal_name": name, "issue": issue, "publisher": publisher, "volume": volume}
+
+
+def editorial_medium(text, title, country=""):
+    """Medium name and issue of non-specialized editorial products only."""
+    values = journal_context(text, title, country=country)
+    return {"journal_name": values["journal_name"], "issue": values["issue"]}
+
+
+def enrich_editorial_medium(record):
+    """Fill only missing medium name/issue; publisher and volume keep their rules."""
+    if norm_text(str(record.get("type_impactu") or "")) != "publicaciones editoriales no especializadas":
+        return record
+    values = editorial_medium(record.get("raw_text", ""), record.get("title", ""),
+                              country=record.get("country", ""))
+    for field, value in values.items():
+        if value and not record.get(field):
+            record[field] = value
+    return record
 
 
 def enrich_article(record):

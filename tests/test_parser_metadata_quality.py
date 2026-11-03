@@ -72,3 +72,52 @@ def test_gruplac_year_is_never_read_from_an_issn():
         "<strong>DOI:</strong>10.12873/441castano <br> Autores: MARIA NATALIA GARCIA RESTREPO"
     ), "Artículos publicados")
     assert record["year"] == 2024
+
+
+def test_editorial_volume_and_medium_name():
+    record = cvlac_record("Publicaciones editoriales no especializadas", EDITORIAL)
+    assert record["volume"] == "11"
+    assert record["journal_name"] == "DOBRAS"
+
+
+def test_empty_volume_labels_are_not_volumes():
+    # COL0095868: "vol:N/A" was published as volume "N".
+    record = parse_product_row(group_row(
+        "40.- <strong>Revisión (Survey):</strong> Nación, memoria e identidad<br/> "
+        "Colombia, Conjeuras ISSN: 1657-5830, 2011 vol:N/A fasc: N/A p&aacute;gs: 4 - 13, "
+        "<strong>DOI:</strong> <br> Autores: JORGE ORLANDO BLANCO SUAREZ"
+    ), "Artículos publicados")
+    assert record["volume"] == "" and record["issue"] == "" and record["pages"] == "4 - 13"
+    from yuku.cvlac_related_works import extract_volume
+    assert extract_volume("ISBN: 958-8018-44-7 v. pags. Areas: Ciencias") == ""
+
+
+def test_issue_label_is_a_whole_word_outside_the_title():
+    from yuku.scienti_journals import journal_context
+    values = journal_context(
+        '"Número 1!" . En: Colombia CURRENT ISSUES IN TEACHERS PROFESSIONAL DEVELOPMENT '
+        "ISSN: 1234-5678 v.2 fasc.3 p.1 - 9 ,2015,", "Número 1!", country="Colombia")
+    assert values["issue"] == "3"
+    assert values["journal_name"] == "CURRENT ISSUES IN TEACHERS PROFESSIONAL DEVELOPMENT"
+
+
+def test_alphanumeric_pages():
+    # COL0134634 and newspaper sections in 0001424608.
+    record = parse_product_row(group_row(
+        "100.- <strong>Corto (Resumen):</strong> PIN66 - Potential Impact<br/> Colombia, "
+        "VALUE IN HEALTH ISSN: 1524-4733, 2013 vol:16 fasc: 3 p&aacute;gs: A91 - A91, "
+        "<strong>DOI:</strong> <br> Autores: NELSON RAFAEL ALVIS GUZMAN"
+    ), "Artículos publicados")
+    assert (record["pages"], record["start_page"], record["volume"]) == ("A91 - A91", "A91", "16")
+    from yuku.cvlac_related_works import extract_pages
+    assert extract_pages("ISSN: 0124-9320 p. 6A - 6A v.1 Areas: X", {}) == ("6A - 6A", "6A", "6A")
+
+
+def test_gruplac_manual_publisher():
+    # COL0032358: manuals and guides use the book layout "ISBN, Ed. <publisher>".
+    record = parse_product_row(group_row(
+        "1.- <strong>Manuales y Guías Especializadas</strong> : Urbanismo táctico. Por una "
+        "movilidad humana y sostenible: Guía práctica<br/> Colombia, 2018, "
+        "ISBN: 978-958-5448-31-5, Ed. Municipio de medellin <br> Autores: FRANCISCO LUIS GIRALDO"
+    ), "Manuales y Guías Especializadas")
+    assert record["publisher"] == "Municipio de medellin"

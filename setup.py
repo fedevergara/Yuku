@@ -90,7 +90,7 @@ def main():
             'beautifulsoup4',
             'lxml',
             'openpyxl',
-            'Kahi_impactu_type_catalog==0.1.0',
+            'Kahi_impactu_type_catalog==0.2.0',
         ],
         extras_require={
             'identified_works': ['Kahi==0.1.2a0', 'Kahi_impactu_utils==0.1.5', 'thefuzz==0.22.1'],

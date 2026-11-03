@@ -19,6 +19,7 @@ from yuku.cvlac_related_works import (
     clean_text,
     normalize_doi,
     normalize_isbn,
+    remove_identifier_spans,
     split_people,
     strip_value,
     uniq_keep_order,
@@ -431,7 +432,7 @@ def parse_product_row(row, section: str) -> dict[str, Any] | None:
     metadata_without_authors = re.split(
         r"\bAutores\s*:", metadata, maxsplit=1, flags=re.IGNORECASE
     )[0]
-    years = [int(value) for value in YEAR_RE.findall(metadata_without_authors)]
+    years = [int(value) for value in YEAR_RE.findall(remove_identifier_spans(metadata_without_authors))]
     plausible_years = [value for value in years if 1950 <= value <= 2026]
     country, publication_place = extract_gruplac_publication_context(
         metadata_without_authors, section

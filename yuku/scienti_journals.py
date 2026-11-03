@@ -55,6 +55,9 @@ def journal_context(text, title, *, source_fields=None, country=""):
             if country and re.match(re.escape(country) + r"\s*[,.;]", slot, re.I):
                 slot = re.sub(r"^" + re.escape(country) + r"\s*[,.;]\s*", "", slot, flags=re.I)
                 name = clean_bibliographic_value(slot)
+            elif legacy and country and re.match(re.escape(country) + r"\s+\S", slot, re.I):
+                # The parser bounded the country by its <br>; the rest is the name.
+                name = clean_bibliographic_value(slot[len(country):])
             elif re.match(r"^[^,.;:]{2,60}[,.;]\s*\S", slot):
                 name = clean_bibliographic_value(re.split(r"[,.;]\s*", slot, maxsplit=1)[1])
             elif legacy:

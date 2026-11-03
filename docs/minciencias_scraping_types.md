@@ -116,7 +116,7 @@ del paquete compartido y de Yuku para no mezclar reglas durante la ejecución.
 
 ## Reproducibilidad y nuevas sesiones
 
-El parser CvLAC es `3.5.1` y el de GrupLAC, `3.5.0`; la normalización de entidades
+El parser CvLAC es `3.6.0` y el de GrupLAC, `3.6.0`; la normalización de entidades
 es v5 y el router es v7.
 Normalización, grafo, materialización y pipeline registran la versión y huella
 del catálogo. Una sesión iniciada con otra huella no se reanuda con reglas nuevas.

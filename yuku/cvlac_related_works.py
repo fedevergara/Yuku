@@ -22,6 +22,11 @@ ALLOWED_SECTION_ALIASES = {
     "publicaciones editoriales no especializadas": "Publicaciones editoriales no especializadas",
     "patentes": "Patentes",
     "textos en publicaciones no cientificas": "Publicaciones editoriales no especializadas",
+    # Sections already reviewed in the shared scraping catalog (GrupLAC).
+    "documentos de trabajo": "Documentos de trabajo",
+    "traducciones": "Traducciones",
+    "traducciones filologicas y edicion de fuentes": "Traducciones Filológicas y Edición de Fuentes",
+    "manuales y guias especializadas": "Manuales y Guías Especializadas",
 }
 
 DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s<>\"{}|\\^`\[\]]+", re.IGNORECASE)

@@ -116,6 +116,10 @@ del paquete compartido y de Yuku para no mezclar reglas durante la ejecución.
 
 ## Reproducibilidad y nuevas sesiones
 
+El parser CvLAC 3.6.0 incorpora las secciones Documentos de trabajo, Traducciones,
+Traducciones Filológicas y Edición de Fuentes y Manuales y Guías Especializadas,
+cuyos tipos ya estaban revisados en el catálogo desde GrupLAC.
+
 El parser CvLAC es `3.6.0` y el de GrupLAC, `3.6.0`; la normalización de entidades
 es v5 y el router es v7.
 Normalización, grafo, materialización y pipeline registran la versión y huella

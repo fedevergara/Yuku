@@ -121,3 +121,48 @@ def test_gruplac_manual_publisher():
         "ISBN: 978-958-5448-31-5, Ed. Municipio de medellin <br> Autores: FRANCISCO LUIS GIRALDO"
     ), "Manuales y Guías Especializadas")
     assert record["publisher"] == "Municipio de medellin"
+
+
+def cvlac_section(heading, bold, blockquote):
+    from yuku.cvlac_related_works import normalize_related_works_document
+    html = (f"<table><tr><td><h3>{heading}</h3></td></tr>"
+            f"<tr><td><li><b>{bold}</b></li></td></tr><tr><td>{blockquote}</td></tr></table>")
+    return normalize_related_works_document("0000000001", html)["production"]
+
+
+def test_cvlac_working_papers_are_parsed():
+    # 0000535591.
+    (record,) = cvlac_section(
+        "Documentos de trabajo", "Producción bibliográfica - Documento de trabajo (Working Paper)",
+        '<blockquote> MANUEL FRANCO AVELLANEDA, "Evaluación en Maloka: una propuesta para '
+        'discusión." En: Colombia. 2012. p. <br/><b>Areas: </b><br/> Ciencias Sociales </blockquote>')
+    assert record["type_impactu"] == "Documento de trabajo"
+    assert record["source_section"] == "Documentos de trabajo"
+    assert (record["title"], record["year"], record["country"]) == (
+        "Evaluación en Maloka: una propuesta para discusión", 2012, "Colombia")
+    assert record["authors"]
+
+
+def test_cvlac_translations_and_manuals_are_parsed():
+    # 0000342840 and 0000131708.
+    (translation,) = cvlac_section(
+        "Traducciones", "Producción bibliográfica - Traducciones - Artículo",
+        '<blockquote> BEATRIZ ELENA GARCIA ARBOLEDA, ESPERANZA HIDALGO URREA, "TRAUMATISME ET '
+        'VIOLENCE: UNE RENCONTRE RÉELLE Á TAMBO (COLOMBIE)" En: Colombia. 2010. . . <i>Idioma '
+        'original:</i>. <i>Idioma traducción:</i>Español. <i>Autor: </i>Oscar Muñiz. <i>Nombre '
+        'original: </i>. <i>fasc. </i>. v.. <br/><b>Areas: </b><br/> Ciencias Sociales </blockquote>')
+    assert (translation["type_impactu"], translation["year"]) == ("Artículo de revista", 2010)
+    assert translation["title"].startswith("TRAUMATISME ET VIOLENCE")
+    (manual,) = cvlac_section(
+        "Manuales y Guías Especializadas",
+        "Producción bibliográfica - Libro - Manuales y Guías Especializadas ",
+        "<blockquote> <i>Nombre del libro: </i>Las Buenas Practicas Agrícolas, <i>Fecha de "
+        "presentación: </i>2018 - Febrero, <i>Isbn: </i>978-958-5471-40-5, <i>Medio de "
+        "divulgación: </i>Papel, <i>Lugar de publicación: </i>Colombia, <i>Editorial: </i>"
+        "Ediciones Usta Universidad Santo Tomás, <br/><b>Areas: </b><br/> Ciencias Agrícolas "
+        "</blockquote>")
+    assert manual["type_impactu"] == "Publicaciones editoriales no especializadas"
+    assert (manual["title"], manual["year"], manual["isbn"]) == (
+        "Las Buenas Practicas Agrícolas", 2018, ["978-958-5471-40-5"])
+    assert (manual["publisher"], manual["publication_place"]) == (
+        "Ediciones Usta Universidad Santo Tomás", "Colombia")

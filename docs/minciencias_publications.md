@@ -94,6 +94,17 @@ sucesor. Los controles y temporales conservan la versión vigente y su anterior,
 por entidad, aunque existan saltos en la numeración. Las fuentes HTML y los datos
 abiertos originales no se eliminan.
 
+La retención también alcanza las ejecuciones que otras etapas citan sólo por
+la colección que produjeron (grafos de proyectos y patentes, instantánea de
+eventos). Así las colecciones `scienti_*_normalized_*` de la normalización de
+entidades quedan registradas como temporales y se retiran con su versión.
+
+La reconstrucción congelada (`scripts/run_scienti_rebuild_all.py`) lee el HTML
+y el estado de GrupLAC del release fuente en su lugar: no crea copias
+`gruplac_stage_raw_*` por ejecución ni consulta el portal. La verificación de
+grupos incompletos queda desactivada; actualizar esos grupos es una tarea de
+adquisición, no de reconstrucción.
+
 Una prueba antigua todavía necesaria para una entidad vigente se conserva hasta
 que se sustituya esa dependencia. Las revisiones y comprobaciones DOI en
 colecciones compartidas se eliminan por `_id` y ejecución propietaria, usando

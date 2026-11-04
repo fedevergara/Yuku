@@ -229,11 +229,16 @@ def prepare(args, directory):
                                  'graph_batch_size': 500, 'graph_partitions': 64,
                                  'measurement_batch_size': 2000, 'entity_batch_size': 2000,
                                  'progress_every': 10000, 'doi_request_delay': 1.0,
-                                 'cvlac_workers': 8, 'gruplac_workers': 8},
+                                 'cvlac_workers': 8, 'gruplac_workers': 8,
+                                 # Frozen rebuilds never query the portal.
+                                 'verify_incomplete_gruplac': False},
                   'collections': {'all_researchers': p['directory_collection'],
                                   'recognized_researchers': p['recognized_collection'],
                                   'recognized_groups': 'recognized_groups',
-                                  'cvlac_raw': frozen['cvlac_raw']},
+                                  'cvlac_raw': frozen['cvlac_raw'],
+                                  # Read the frozen GrupLAC HTML in place, without copies.
+                                  'gruplac_raw': frozen['gruplac_raw'],
+                                  'gruplac_downloads': frozen['gruplac_state']},
                   'frozen_sources': frozen}
         save(path, config)
         save(directory / 'planned.outputs.json', {**destinations, 'works_filtered': destinations['works'] + '_filtered'})

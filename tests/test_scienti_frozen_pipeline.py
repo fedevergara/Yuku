@@ -11,8 +11,7 @@ from yuku.scienti_frozen_pipeline import FrozenScientiPipeline
 from yuku.scienti_pipeline import load_pipeline_config
 
 
-@pytest.fixture
-def pipeline(tmp_path):
+def build_pipeline(tmp_path, collections=None, processing=None):
     db = mongomock.MongoClient().dam
     sources = ('raw_cvlac', 'manifest', 'state_cvlac', 'raw_gruplac', 'state_gruplac',
                'all_researchers', 'recognized_researchers', 'recognized_groups',
@@ -27,8 +26,8 @@ def pipeline(tmp_path):
               'publication': {'date': '20261009'},
               'convocations': {'researchers_json': str(tmp_path / 'people.json'),
                               'groups_json': str(tmp_path / 'groups.json')},
-              'processing': {'confirm_conflicting_dois': True},
-              'collections': {'cvlac_raw': 'raw_cvlac'},
+              'processing': {'confirm_conflicting_dois': True, **(processing or {})},
+              'collections': {'cvlac_raw': 'raw_cvlac', **(collections or {})},
               'frozen_sources': {'source_release': 'old_release', 'cvlac_run': 'frozen_cvlac',
                   'cvlac_raw': 'raw_cvlac', 'cvlac_manifest': 'manifest', 'cvlac_state': 'state_cvlac',
                   'gruplac_raw': 'raw_gruplac', 'gruplac_state': 'state_gruplac',
@@ -40,6 +39,31 @@ def pipeline(tmp_path):
     facade.db = db
     facade.client = None
     return FrozenScientiPipeline(facade, load_pipeline_config(file))
+
+
+@pytest.fixture
+def pipeline(tmp_path):
+    return build_pipeline(tmp_path)
+
+
+IN_PLACE = {'gruplac_raw': 'raw_gruplac', 'gruplac_downloads': 'state_gruplac'}
+
+
+def test_gruplac_frozen_html_is_read_in_place_without_copies(tmp_path):
+    pipeline = build_pipeline(tmp_path, IN_PLACE, {'verify_incomplete_gruplac': False})
+    before = set(pipeline.db.list_collection_names())
+    result = pipeline._gruplac_download()
+    assert result['status'] == 'reused_frozen_source'
+    assert result['raw']['collection'] == 'raw_gruplac'
+    assert set(pipeline.db.list_collection_names()) == before
+    assert pipeline.db.scienti_rebuild_source_copies.count_documents({}) == 0
+
+
+def test_gruplac_frozen_html_in_place_refuses_portal_verification(tmp_path):
+    pipeline = build_pipeline(tmp_path, IN_PLACE)
+    with pytest.raises(RuntimeError, match='read-only'):
+        pipeline._gruplac_download()
+    assert pipeline.db.raw_gruplac.find_one({'_id': 'source'})['value'] == 'original'
 
 
 def test_preflight_rejects_changed_frozen_manifest(pipeline):

@@ -7,8 +7,10 @@ from kahi_impactu_type_catalog import get_impactu_catalog
 from yuku.scienti_entities import ENTITY_KEYS, ENTITY_NORMALIZER_VERSION, ENTITY_RUNS, _timestamp
 from yuku.scienti_entity_comparison import (
     ENTITY_COMPARISONS,
+    SNAPSHOT_REFRESH_NORMALIZER_VERSIONS,
     ScientiEntityVersionComparator,
     _old_timestamp,
+    _snapshot_refresh_versions,
 )
 
 
@@ -492,6 +494,56 @@ class ScientiEntityVersionComparatorTests(unittest.TestCase):
         self.assertEqual(result["metrics"]["projects"]["modified_documents"], 1)
         self.assertEqual(result["metrics"]["events"]["removed_documents"], 1)
         self.assertEqual(result["metrics"]["events"]["added_documents"], 1)
+
+    def test_previous_normalizer_snapshot_refresh_passes(self):
+        # Production 2026-11-03: v5 (current) -> v6 fell into the legacy
+        # profile and flagged every document as critical.
+        from yuku.scraping_type_catalog import catalog_identity
+        from yuku.scienti_routing import ENTITY_ROUTER_VERSION
+
+        previous = SNAPSHOT_REFRESH_NORMALIZER_VERSIONS[-2]
+        sides = (
+            ("entities_old", self.old_destinations, previous, {}),
+            ("entities_new", self.new_destinations, ENTITY_NORMALIZER_VERSION,
+             {"source_metadata.scraping_type_catalog": catalog_identity()}),
+        )
+        for run_name, destinations, version, extra in sides:
+            self.db[ENTITY_RUNS].update_one(
+                {"_id": run_name},
+                {"$set": {
+                    "config.normalizer_version": version,
+                    "config.router_version": ENTITY_ROUTER_VERSION,
+                }},
+            )
+            for entity in ENTITY_KEYS:
+                self.db[destinations[entity]].update_many(
+                    {},
+                    {"$set": {
+                        "source_metadata.normalizer_version": version,
+                        "source_metadata.router_version": ENTITY_ROUTER_VERSION,
+                        **extra,
+                    }},
+                )
+        self.db[self.new_destinations["works"]].update_one(
+            {}, {"$set": {"titles.0.title": "Titulo corregido por el parser"}}
+        )
+
+        result = self._run("previous_normalizer_refresh")
+
+        self.assertEqual(result["transition_profile"], "snapshot_refresh")
+        self.assertEqual(result["finding_counts"], {})
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["metrics"]["works"]["modified_documents"], 1)
+
+    def test_current_normalizer_is_a_known_snapshot_refresh_target(self):
+        # Bumping ENTITY_NORMALIZER_VERSION without deciding how to compare
+        # against the published snapshot must fail here, not in production.
+        self.assertEqual(SNAPSHOT_REFRESH_NORMALIZER_VERSIONS[-1], ENTITY_NORMALIZER_VERSION)
+        previous = SNAPSHOT_REFRESH_NORMALIZER_VERSIONS[-2]
+        self.assertTrue(_snapshot_refresh_versions(previous, ENTITY_NORMALIZER_VERSION))
+        self.assertTrue(_snapshot_refresh_versions(ENTITY_NORMALIZER_VERSION, ENTITY_NORMALIZER_VERSION))
+        self.assertFalse(_snapshot_refresh_versions(ENTITY_NORMALIZER_VERSION, previous))
+        self.assertFalse(_snapshot_refresh_versions("scienti-entity-normalizer-v3", ENTITY_NORMALIZER_VERSION))
 
 
 if __name__ == "__main__":

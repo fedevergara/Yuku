@@ -21,7 +21,7 @@ GRUPLAC_AUDITS = "scienti_gruplac_normalization_audits"
 MATERIALIZER_VERSION = "scienti-affiliations-v3"
 REQUIRED_GRUPLAC_PARSER_VERSION = "3.2.0"
 SUPPORTED_GRUPLAC_PARSER_VERSIONS = {
-    REQUIRED_GRUPLAC_PARSER_VERSION, "3.3.0", "3.4.0", "3.4.1", "3.5.0"
+    REQUIRED_GRUPLAC_PARSER_VERSION, "3.3.0", "3.4.0", "3.4.1", "3.5.0", "3.6.0"
 }
 GROUP_CODE_RE = re.compile(r"COL\d{7}")
 NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,79}")

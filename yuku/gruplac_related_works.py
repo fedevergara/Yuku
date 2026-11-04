@@ -10,6 +10,7 @@ from yuku.cvlac_related_works import (
     DOI_RE,
     ISBN_RE,
     ISSN_RE,
+    PAGE_TOKEN,
     SUSPICIOUS_PUBLICATION_PLACE_RE,
     YEAR_RE,
     clean_bibliographic_value,
@@ -19,6 +20,8 @@ from yuku.cvlac_related_works import (
     clean_text,
     normalize_doi,
     normalize_isbn,
+    remove_accents,
+    remove_identifier_spans,
     split_people,
     strip_value,
     uniq_keep_order,
@@ -332,7 +335,7 @@ def extract_gruplac_book_title(metadata: str, product_type: str, section: str) -
 
 
 def split_page_range(value: str) -> tuple[str, str]:
-    match = re.fullmatch(r"\s*([0-9]+)(?:\s*-\s*([0-9]+))?\s*", value or "")
+    match = re.fullmatch(r"\s*(" + PAGE_TOKEN + r")(?:\s*-\s*(" + PAGE_TOKEN + r"))?\s*", value or "")
     if not match:
         return "", ""
     start = "" if match.group(1) == "0" else match.group(1)
@@ -431,7 +434,7 @@ def parse_product_row(row, section: str) -> dict[str, Any] | None:
     metadata_without_authors = re.split(
         r"\bAutores\s*:", metadata, maxsplit=1, flags=re.IGNORECASE
     )[0]
-    years = [int(value) for value in YEAR_RE.findall(metadata_without_authors)]
+    years = [int(value) for value in YEAR_RE.findall(remove_identifier_spans(metadata_without_authors))]
     plausible_years = [value for value in years if 1950 <= value <= 2026]
     country, publication_place = extract_gruplac_publication_context(
         metadata_without_authors, section
@@ -451,6 +454,8 @@ def parse_product_row(row, section: str) -> dict[str, Any] | None:
     book_related = (
         type_impactu in {"Libro", "Capítulo de libro"}
         or "editorial" in clean_text(f"{product_type} {section}").lower()
+        # Manuals and guides declare their publisher with the book layout.
+        or "manuales y guias" in remove_accents(clean_text(product_type)).lower()
     )
     pages = clean_pages_value(pages_match.group(1)) if pages_match else ""
     start_page, end_page = split_page_range(pages)
@@ -497,8 +502,9 @@ def parse_product_row(row, section: str) -> dict[str, Any] | None:
         record["type_findings"] = [{"reason": "bold_text_is_not_a_catalog_type",
                                     "raw_type": raw_type, "source_section": section}]
     enrich_exact_section(record, section)
-    from yuku.scienti_journals import enrich_article
+    from yuku.scienti_journals import enrich_article, enrich_editorial_medium
     enrich_article(record)
+    enrich_editorial_medium(record)
     return record
 
 

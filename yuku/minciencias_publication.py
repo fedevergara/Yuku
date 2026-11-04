@@ -434,6 +434,13 @@ class EntityRetention:
         return {"status": "complete", **plan}
 
 
+# Runs that later stages reference only by the collection they produced.
+PRODUCER_OUTPUTS = {
+    "scienti_entity_graph_runs": "target_collection",
+    "scienti_entity_materialization_runs": "target_collection",
+}
+
+
 def _control_index(db):
     """Read bounded metadata namespaces, never graph/HTML/DOI row collections."""
     available = set(db.list_collection_names())
@@ -448,6 +455,10 @@ def _control_index(db):
             key = (namespace, doc["_id"])
             controls[key] = doc
             by_id.setdefault(doc["_id"], set()).add(key)
+            output = (doc.get("config") or {}).get(PRODUCER_OUTPUTS.get(namespace, ""))
+            if isinstance(output, str) and output:
+                # A measurement names its graph; reach the run (and its inputs).
+                by_id.setdefault(output, set()).add(key)
     return available, controls, by_id
 
 

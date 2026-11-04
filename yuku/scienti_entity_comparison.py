@@ -37,6 +37,14 @@ from yuku.scienti_routing import (
 
 
 COMPARISON_VERSION = "scienti-entity-version-comparison-v4"
+# Same Kahi entity schema: a forward move along this list is a snapshot
+# refresh whose drift is measured, not failed. List versions explicitly; a new
+# ENTITY_NORMALIZER_VERSION must be appended here (enforced by the tests).
+SNAPSHOT_REFRESH_NORMALIZER_VERSIONS = (
+    "scienti-entity-normalizer-v4",
+    "scienti-entity-normalizer-v5",
+    "scienti-entity-normalizer-v6",
+)
 ENTITY_COMPARISONS = "scienti_entity_version_comparisons"
 ENTITY_COMPARISON_ANOMALIES = "scienti_entity_version_comparison_anomalies"
 ENTITY_COMPARISON_TRANSITIONS = "scienti_entity_version_comparison_transitions"
@@ -131,6 +139,15 @@ def _next(cursor: Iterator[dict[str, Any]]) -> dict[str, Any] | None:
         return None
 
 
+def _snapshot_refresh_versions(old_version: str, new_version: str) -> bool:
+    versions = SNAPSHOT_REFRESH_NORMALIZER_VERSIONS
+    return (
+        old_version in versions
+        and new_version in versions
+        and versions.index(old_version) <= versions.index(new_version)
+    )
+
+
 class ScientiEntityVersionComparator:
     """Compare every `_id` and field while allowing only declared v2 changes."""
 
@@ -218,11 +235,7 @@ class ScientiEntityVersionComparator:
                     "catalog routing transition requires v3 without general works"
                 )
         elif (
-            (old_version, new_version) in {
-                ("scienti-entity-normalizer-v4", "scienti-entity-normalizer-v4"),
-                ("scienti-entity-normalizer-v4", ENTITY_NORMALIZER_VERSION),
-                (ENTITY_NORMALIZER_VERSION, ENTITY_NORMALIZER_VERSION),
-            }
+            _snapshot_refresh_versions(old_version, new_version)
             and old_router
             and (old_router == new_router or (
                 old_router in {"scienti-exact-router-v5", "scienti-exact-router-v6"}

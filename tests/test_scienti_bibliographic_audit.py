@@ -74,6 +74,40 @@ class ScientiBibliographicEnrichmentAuditorTest(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["critical_anomalies"], 0)
 
+    @staticmethod
+    def _journal_work(identifier, *, context, source):
+        scienti = {"fields": {"journal_name": {"status": "consistent", "value": "Revista X"}}}
+        if context:
+            scienti["context_type"] = context
+        return {"_id": identifier, "source": source,
+                "bibliographic_info": {"scienti": scienti}}
+
+    def test_non_article_medium_stays_evidence_without_journal_source(self):
+        # Production 2026-11-03: magazine and newspaper names of
+        # non-specialized editorial products are evidence, not a source.
+        result = self._run([
+            self._journal_work("article", context="journal", source={
+                "name": "Revista X", "types": [{"type": "journal"}]}),
+            self._journal_work("magazine", context="", source={}),
+        ])
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["checks"]["consistent_journal_without_source"], 0)
+        self.assertEqual(result["checks"]["non_article_journal_source"], 0)
+
+    def test_article_journal_must_still_become_its_source(self):
+        result = self._run([
+            # mongomock cannot evaluate $expr on a missing source.name.
+            self._journal_work("lost", context="journal", source={"name": ""}),
+            self._journal_work("renamed", context="journal", source={
+                "name": "Otra", "types": [{"type": "journal"}]}),
+            self._journal_work("promoted", context="", source={
+                "name": "Revista X", "types": [{"type": "journal"}]}),
+        ])
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["checks"]["consistent_journal_without_source"], 1)
+        self.assertEqual(result["checks"]["journal_name_mismatch"], 2)
+        self.assertEqual(result["checks"]["non_article_journal_source"], 1)
+
     def test_accented_language_names_pass_the_mongodb_gate(self):
         documents = []
         for index, language in enumerate(

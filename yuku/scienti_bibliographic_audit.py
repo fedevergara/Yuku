@@ -106,13 +106,22 @@ class ScientiBibliographicEnrichmentAuditor:
         fields = "bibliographic_info.scienti.fields"
         checks = {
             "journal_loss": abs(counts["base_consistent_journals"] - counts["final_consistent_journals"]),
+            # Only articles promote journal_name to source. Non-specialized
+            # editorial products keep their medium (magazine, newspaper) as
+            # evidence; their source comes from book title or publisher.
             "consistent_journal_without_source": final.count_documents({
                 "bibliographic_info.scienti.fields.journal_name.status": "consistent",
+                "bibliographic_info.scienti.context_type": "journal",
                 "$or": [{"source.name": {"$exists": False}}, {"source.name": ""}],
             }),
             "journal_name_mismatch": final.count_documents({
                 "bibliographic_info.scienti.fields.journal_name.status": "consistent",
+                "bibliographic_info.scienti.context_type": "journal",
                 "$expr": {"$ne": ["$bibliographic_info.scienti.fields.journal_name.value", "$source.name"]},
+            }),
+            "non_article_journal_source": final.count_documents({
+                "bibliographic_info.scienti.context_type": {"$ne": "journal"},
+                "source.types.type": "journal",
             }),
             "conflicted_journal_promoted": final.count_documents({
                 "bibliographic_info.scienti.fields.journal_name.status": "conflict",
